@@ -17,7 +17,7 @@ import { getRoundLore } from './services/geminiService';
 import { soundService } from './services/soundService';
 import { MAPS } from './maps';
 import { MapBuilderModal } from './components/MapBuilderModal';
-import { getActiveCustomMap, saveCustomMap, loadLocalCommunityMaps, likeLocalCommunityMap, recordCommunityMapScore } from './customMapUtils';
+import { floorMapObjects, getActiveCustomMap, saveCustomMap, loadLocalCommunityMaps, likeLocalCommunityMap, recordCommunityMapScore } from './customMapUtils';
 import { io, Socket } from 'socket.io-client';
 import { Skull, Target, Database, RefreshCw, Activity, ShoppingCart, Zap, Gauge, Heart, Shield, Box as BoxIcon, Crosshair, TrendingUp, Pause, Play, LogOut, PlusCircle, UserX, Wind, RotateCcw, AlertCircle, Timer, Swords, Bomb, Sun, Crosshair as HeadshotIcon, Zap as PapIcon, Trophy, User, ChevronLeft, ChevronRight, Trash2, ArrowUp, Zap as SlideIcon, Snowflake, Flame, Scissors, Hourglass, Map as MapIcon, Gamepad, Bluetooth, Keyboard, Eye, X, Gem, Egg, Wrench, Star, Medal, Award, Crown, ChevronUp, ChevronDown, CheckCircle2, Check, Droplet, CircleDot, Search, Hand, Layers, VolumeX, Lock, Unlock, UserPlus, Users, MessageSquare, MousePointer2, Move, Cpu, Copy, ZoomIn, ZoomOut, Bell } from 'lucide-react';
 
@@ -6056,7 +6056,8 @@ const App: React.FC = () => {
     setTimeout(() => setShowRoundSplash(false), 3000);
   };
 
-  const startCustomGameWithCustomMap = (map: MapConfig) => {
+  const startCustomGameWithCustomMap = (rawMap: MapConfig) => {
+    const map = rawMap.autoFloor === false ? rawMap : floorMapObjects(rawMap);
     setCustomMapData(map);
     saveCustomMap(map);
     setCustomGameConfig(prev => ({
@@ -6564,7 +6565,7 @@ const App: React.FC = () => {
         />
       )}
       <div className="absolute inset-0 z-0">
-        <Canvas key={gameKey} gl={{ antialias: false, alpha: false }} dpr={gameSettings.batterySaver ? 1 : Math.min(window.devicePixelRatio, 2)} camera={{ fov: 75, near: 0.01, far: 1000 }}>
+        <Canvas key={gameKey} gl={{ antialias: !gameSettings.batterySaver, alpha: false }} dpr={gameSettings.batterySaver ? 1 : Math.min(window.devicePixelRatio, 2)} camera={{ fov: 75, near: 0.01, far: 1000 }}>
           <Suspense fallback={null}>
             <Scene 
               isPlayOfTheGame={isPlayOfTheGame}

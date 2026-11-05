@@ -211,6 +211,11 @@ export interface CustomZombieConfig {
   modelScale?: number;
 }
 
+export interface ZombieMixEntry {
+  kind: string;
+  weight: number;
+}
+
 export interface CustomSkinConfig {
   name?: string;
   shirtColor?: string;
@@ -291,6 +296,14 @@ export interface MapConfig {
   side2SpawnPoints?: [number, number, number][];
   craftingTablePos: [number, number, number];
   customZombies?: CustomZombieConfig[];
+  // Which zombies spawn on this map. Each entry is a built-in type ('normal','runner','tank','inferno','parasite','crawler','brute')
+  // or the id of a custom zombie (customZombies[].id). weight = share of spawns (any positive numbers).
+  // One entry = only that zombie. Empty/missing = default round-based spawning (old maps keep working).
+  zombieMix?: ZombieMixEntry[];
+  // 0.2 (very dark) .. 3 (very bright). 1 = normal.
+  brightness?: number;
+  // Keep objects resting on the floor automatically (default on).
+  autoFloor?: boolean;
   customSurvivorSkin?: CustomSkinConfig;
   // Play as a zombie / boss / R9S character (id from PLAYER_AVATARS). Empty or 'default' = normal survivor.
   playerAvatar?: string;
@@ -315,6 +328,7 @@ export interface ZombieData {
   turnTimer?: number;
   timeNotClose?: number;
   isAlly?: boolean;
+  customId?: string;
 }
 
 export interface Achievement {

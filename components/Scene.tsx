@@ -1973,7 +1973,7 @@ export const Scene: React.FC<SceneProps> = ({
   isDoingMove, activeMove, activeHardpoint,
   bossDefeated, isPlayOfTheGame, shotCrows
 }) => {
-  const { camera, scene, clock } = useThree();
+  const { camera, scene, clock, gl } = useThree();
 
   const isMultiplayer = gameMode === 'multiplayer' || gameMode === 'multiplayer_ffa' || gameMode === 'multiplayer_tdm' || gameMode === 'gun_game' || gameMode === 'hard_point' || gameMode?.startsWith('multiplayer');
 
@@ -2229,11 +2229,16 @@ export const Scene: React.FC<SceneProps> = ({
     }
     
     // Update Lights
-    if (ambientLightRef.current) ambientLightRef.current.intensity = ambientIntensity.current;
-    if (hemiLightRef.current) hemiLightRef.current.intensity = ambientIntensity.current * 0.4;
-    if (pointLight1Ref.current) pointLight1Ref.current.intensity = pointLightIntensity.current;
-    if (pointLight2Ref.current) pointLight2Ref.current.intensity = pointLightIntensity.current * 0.6;
+    // Map brightness (set in the map builder): scales every light + the camera exposure
+    const bright = Math.max(0.1, Math.min(4, mapConfig?.brightness ?? 1));
+    if (ambientLightRef.current) ambientLightRef.current.intensity = ambientIntensity.current * bright;
+    if (hemiLightRef.current) hemiLightRef.current.intensity = ambientIntensity.current * 0.4 * bright;
+    if (pointLight1Ref.current) pointLight1Ref.current.intensity = pointLightIntensity.current * bright;
+    if (pointLight2Ref.current) pointLight2Ref.current.intensity = pointLightIntensity.current * 0.6 * bright;
+    if (gl.toneMappingExposure !== bright) gl.toneMappingExposure = bright;
   });
+
+  useEffect(() => () => { gl.toneMappingExposure = 1; }, [gl]);
 
   useEffect(() => {
     if (weather === 'rain') {
@@ -4972,6 +4977,37 @@ export const Scene: React.FC<SceneProps> = ({
         speed *= 0.6; // Slower
       }
 
+      // Map's own zombie mix (set in the map builder): pick by weight. Overrides round-based types.
+      let customId: string | undefined;
+      const mix = (mapConfig?.zombieMix || []).filter(m => m && m.weight > 0);
+      if (mix.length > 0) {
+        const total = mix.reduce((a, m) => a + m.weight, 0);
+        let roll = Math.random() * total;
+        let pick = mix[mix.length - 1];
+        for (const m of mix) { roll -= m.weight; if (roll <= 0) { pick = m; break; } }
+        const diffMul = difficulty === 'easy' ? 0.8 : difficulty === 'hard' ? 1.2 : 1;
+        hp = (120 + gameState.round * 50) * diffMul;
+        speed = (2.2 + gameState.round * 0.1) * diffMul;
+        const BUILTIN = ['normal', 'runner', 'tank', 'inferno', 'parasite', 'crawler', 'brute'];
+        if (BUILTIN.includes(pick.kind)) {
+          type = pick.kind as typeof type;
+          if (type === 'brute') { hp *= 5; speed *= 0.5; }
+          else if (type === 'inferno') { hp *= 1.5; speed *= 0.8; }
+          else if (type === 'parasite') { hp *= 0.5; speed *= 1.8; }
+          else if (type === 'crawler') { hp *= 0.8; speed *= 1.4; }
+          else if (type === 'runner') { hp *= 0.7; speed *= 1.5; }
+          else if (type === 'tank') { hp *= 2.5; speed *= 0.6; }
+        } else {
+          type = 'normal';
+          const cz = mapConfig?.customZombies?.find(c => c.id === pick.kind);
+          if (cz) {
+            customId = cz.id;
+            hp *= cz.hpMultiplier || 1;
+            speed *= cz.speedMultiplier || 1;
+          }
+        }
+      }
+
       zombieRefs.current.push({
         id: Math.random().toString(36).substring(7),
         position: spawnPos,
@@ -4983,6 +5019,7 @@ export const Scene: React.FC<SceneProps> = ({
         variant: Math.random(),
         stunTimer: 0,
         type,
+        customId,
         timeNotClose: 0
       });
       setZombieIds(zombieRefs.current.map(z => z.id));
@@ -5804,7 +5841,14 @@ export const Scene: React.FC<SceneProps> = ({
         />
       ))}
       {zombieRefs.current.map(z => (
-        <ZombieInstance key={z.id} position={z.position} variant={z.variant} hitFlash={z.hitFlash} playerPosRef={playerPos} paused={status === GameStatus.PAUSED} isStunned={z.stunTimer > 0} type={z.type} customZombieConfig={mapConfig?.customZombies?.[0]} />
+        <ZombieInstance key={z.id} position={z.position} variant={z.variant} hitFlash={z.hitFlash} playerPosRef={playerPos} paused={status === GameStatus.PAUSED} isStunned={z.stunTimer > 0} type={z.type} customZombieConfig={(() => {
+          const list = mapConfig?.customZombies;
+          if (!list || list.length === 0) return undefined;
+          if (z.customId) return list.find(c => c.id === z.customId);
+          // Old maps (no mix): every zombie uses the first custom zombie
+          if (!mapConfig?.zombieMix || mapConfig.zombieMix.length === 0) return list[0];
+          return undefined;
+        })()} />
       ))}
       {dragonActive && (
         <group ref={dragonGroupRef} position={dragonPos.current} rotation={[0, dragonRotY.current, 0]}>
@@ -6570,7 +6614,13 @@ export const Scene: React.FC<SceneProps> = ({
       )}
 
       {hasCustomAvatar && (
-        <PlayerAvatar avatarId={mapConfig.playerAvatar as string} playerPos={playerPos.current} isDowned={gameState.isDowned} />
+        <PlayerAvatar
+          avatarId={mapConfig.playerAvatar as string}
+          playerPos={playerPos.current}
+          isDowned={gameState.isDowned}
+          isShootingRef={isShooting}
+          renderWeapon={gameState.weaponName ? () => <WeaponModel weaponName={gameState.weaponName} camo={(displayCamo || 'none') as WeaponCamo} /> : undefined}
+        />
       )}
       {!hasCustomAvatar && (effectiveThirdPersonMode || gameMode === 'dead_ops' || status === GameStatus.GAMEOVER) && (
         <LocalPlayerModel 
@@ -7541,7 +7591,10 @@ const CustomModelZombie: React.FC<{ url: string; scale?: number; hitFlash: numbe
 
     const mat: any = (Array.isArray(src.material) ? src.material[0] : src.material).clone();
     mat.side = THREE.DoubleSide;
-    if (mat.map) { mat.map.anisotropy = 8; mat.map.colorSpace = THREE.SRGBColorSpace; }
+    const aniso = Math.min(16, gl.capabilities.getMaxAnisotropy());
+    if (mat.map) { mat.map.anisotropy = aniso; mat.map.colorSpace = THREE.SRGBColorSpace; }
+    if (mat.normalMap) mat.normalMap.anisotropy = aniso;
+    if (mat.metalnessMap) mat.metalnessMap.anisotropy = aniso;
     if (mat.isMeshStandardMaterial) {
       mat.envMap = getSharedEnv(gl); mat.envMapIntensity = 0.8;
       mat.metalness = Math.min(mat.metalness ?? 0, 0.5);
@@ -7582,7 +7635,7 @@ const CustomModelZombie: React.FC<{ url: string; scale?: number; hitFlash: numbe
     if (m.emissive) { m.emissive.set(hitFlash > 0 ? '#ff0000' : '#000000'); m.emissiveIntensity = hitFlash > 0 ? 0.9 : 0; }
   }, [rig, hitFlash]);
 
-  useFrame((state, delta) => {
+  const animate = (state: any, delta: number) => {
     if (!rig || !meshRef.current || !root.current) return;
     // Real movement speed (the parent moves the zombie), so legs only stride while walking.
     root.current.getWorldPosition(tmp);
@@ -7660,6 +7713,12 @@ const CustomModelZombie: React.FC<{ url: string; scale?: number; hitFlash: numbe
     }
     rig.geo.attributes.position.needsUpdate = true;
     if (tick.current % 4 === 0) rig.geo.computeVertexNormals();
+  };
+  // A broken model can never take the whole game down: if animating throws once, it just stops animating.
+  const animFailed = useRef(false);
+  useFrame((state, delta) => {
+    if (animFailed.current) return;
+    try { animate(state, delta); } catch (e) { animFailed.current = true; console.warn('Custom zombie animation disabled', e); }
   });
 
   return (
@@ -7668,6 +7727,18 @@ const CustomModelZombie: React.FC<{ url: string; scale?: number; hitFlash: numbe
     </group>
   );
 };
+
+// Simple body shown while a custom zombie model loads, or if it fails to load (so the game never crashes).
+const ZombieFallbackBody: React.FC<{ color: string; hitFlash: number }> = ({ color, hitFlash }) => (
+  <group>
+    <Box args={[0.6, 0.9, 0.4]} position={[0, 1.25, 0]}><meshStandardMaterial color={hitFlash > 0 ? '#ff0000' : color} roughness={0.9} /></Box>
+    <Box args={[0.4, 0.4, 0.4]} position={[0, 1.95, 0]}><meshStandardMaterial color={hitFlash > 0 ? '#ff0000' : color} roughness={0.9} /></Box>
+    <Box args={[0.2, 0.8, 0.2]} position={[-0.4, 1.2, 0.3]} rotation={[-1.3, 0, 0]}><meshStandardMaterial color={color} /></Box>
+    <Box args={[0.2, 0.8, 0.2]} position={[0.4, 1.2, 0.3]} rotation={[-1.3, 0, 0]}><meshStandardMaterial color={color} /></Box>
+    <Box args={[0.22, 0.8, 0.22]} position={[-0.15, 0.4, 0]}><meshStandardMaterial color={color} /></Box>
+    <Box args={[0.22, 0.8, 0.22]} position={[0.15, 0.4, 0]}><meshStandardMaterial color={color} /></Box>
+  </group>
+);
 
 const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFlash: number; playerPosRef: React.RefObject<THREE.Vector3>; paused: boolean; isStunned: boolean; type: 'normal' | 'runner' | 'tank' | 'inferno' | 'parasite' | 'crawler' | 'brute'; customZombieConfig?: any }> = React.memo(({ position, variant, hitFlash, playerPosRef, paused, isStunned, type, customZombieConfig }) => {
   const mesh = useRef<THREE.Group>(null);
@@ -7775,9 +7846,11 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
       )}
 
       {customZombieConfig?.modelUrl ? (
-        <Suspense fallback={null}>
-          <CustomModelZombie url={customZombieConfig.modelUrl} scale={customZombieConfig.modelScale ?? 1} hitFlash={hitFlash} />
-        </Suspense>
+        <GLBBoundary fallback={<ZombieFallbackBody color={customZombieConfig.skinColor || '#4d7c0f'} hitFlash={hitFlash} />}>
+          <Suspense fallback={<ZombieFallbackBody color={customZombieConfig.skinColor || '#4d7c0f'} hitFlash={hitFlash} />}>
+            <CustomModelZombie url={customZombieConfig.modelUrl} scale={customZombieConfig.modelScale ?? 1} hitFlash={hitFlash} />
+          </Suspense>
+        </GLBBoundary>
       ) : (<>
       {/* Torso */}
       <Box args={[0.6, 0.9, 0.4]} position={[0, 1.25, 0]}>

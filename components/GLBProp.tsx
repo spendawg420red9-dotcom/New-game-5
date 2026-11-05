@@ -63,7 +63,10 @@ export const GLBProp: React.FC<{
           c.envMapIntensity = 0.9;
           c.metalness = Math.min(c.metalness ?? 0, 0.7);
           c.roughness = Math.max(c.roughness ?? 1, 0.35);
-          if (c.map) { c.map.anisotropy = 8; c.map.colorSpace = THREE.SRGBColorSpace; }
+          const aniso = Math.min(16, gl.capabilities.getMaxAnisotropy());
+          if (c.map) { c.map.anisotropy = aniso; c.map.colorSpace = THREE.SRGBColorSpace; }
+          if (c.normalMap) c.normalMap.anisotropy = aniso;
+          if (c.metalnessMap) c.metalnessMap.anisotropy = aniso;
         }
         mats.push(c);
         return c;
@@ -183,12 +186,185 @@ const AVATAR_HEIGHT: Record<string, number> = {
   zombie_tank: 2.2, zombie_brute: 2.3, zombie_crawler: 1.1, zombie_pickle: 1.9, biohazard_armor: 1.9,
 };
 
+// A static single-mesh GLB (Meshy) has no skeleton, so it stays in a T-pose. This rigs it from its own shape:
+// arms are bent forward so the character holds a gun in front of it, legs stride when moving.
+const POSE_DOWN = 1.15;    // how far the arms drop from the T-pose (rad)
+const POSE_FORWARD = 1.0;  // how far they swing forward to hold the gun (rad)
+
+const PosedGLBBody: React.FC<{ url: string; height: number; renderWeapon?: () => React.ReactNode; isMoving: React.MutableRefObject<boolean>; isShooting: React.MutableRefObject<boolean> }> = ({ url, height, renderWeapon, isMoving, isShooting }) => {
+  const { scene } = useGLTF(resolveModelUrl(url)) as any;
+  const { gl } = useThree();
+  const meshRef = useRef<THREE.Mesh>(null);
+  const gunRef = useRef<THREE.Group>(null);
+  const walk = useRef(0);
+  const recoil = useRef(0);
+  const posed = useRef(false);
+  const wasMoving = useRef(false);
+  const frame = useRef(0);
+
+  const rig = useMemo(() => {
+    const clone = scene.clone(true);
+    clone.updateWorldMatrix(true, true);
+    let target: THREE.Mesh | null = null;
+    clone.traverse((o: any) => { if (!target && o.isMesh && o.geometry?.attributes?.position) target = o; });
+    if (!target) return null;
+    const src = target as THREE.Mesh;
+    posed.current = false;
+    const geo = src.geometry.clone();
+    geo.applyMatrix4(src.matrixWorld);
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox!;
+    const H = Math.max(bb.max.y - bb.min.y, 1e-4);
+    const k = height / H;
+    geo.translate(-(bb.max.x + bb.min.x) / 2, -bb.min.y, -(bb.max.z + bb.min.z) / 2);
+    geo.scale(k, k, k);
+    if (!geo.attributes.normal) geo.computeVertexNormals();
+
+    const mat: any = (Array.isArray(src.material) ? src.material[0] : src.material).clone();
+    mat.side = THREE.DoubleSide;
+    const aniso = Math.min(16, gl.capabilities.getMaxAnisotropy());
+    if (mat.map) { mat.map.anisotropy = aniso; mat.map.colorSpace = THREE.SRGBColorSpace; }
+    if (mat.normalMap) mat.normalMap.anisotropy = aniso;
+    if (mat.metalnessMap) mat.metalnessMap.anisotropy = aniso;
+    if (mat.isMeshStandardMaterial) {
+      mat.envMap = getEnv(gl); mat.envMapIntensity = 0.9;
+      mat.metalness = Math.min(mat.metalness ?? 0, 0.6);
+      mat.roughness = Math.max(mat.roughness ?? 1, 0.4);
+    }
+    const posAttr = geo.attributes.position as THREE.BufferAttribute;
+    posAttr.setUsage(THREE.DynamicDrawUsage);
+    const orig = new Float32Array(posAttr.array as Float32Array);
+    const n = posAttr.count;
+
+    // Measure the silhouette (widest |x| per height slice) to find the outstretched arms
+    const BINS = 40;
+    const ext = new Float32Array(BINS);
+    for (let i = 0; i < n; i++) {
+      const b = Math.min(BINS - 1, Math.max(0, Math.floor((orig[i * 3 + 1] / height) * BINS)));
+      ext[b] = Math.max(ext[b], Math.abs(orig[i * 3]));
+    }
+    const maxExt = Math.max(...Array.from(ext));
+    const wide: number[] = [];
+    for (let b = 0; b < BINS; b++) if (ext[b] > maxExt * 0.62) wide.push(b);
+    const armBottom = (wide.length ? Math.min(...wide) : BINS / 2) / BINS * height;
+    const armTop = (wide.length ? Math.max(...wide) + 1 : BINS / 2) / BINS * height;
+    const torsoBins: number[] = [];
+    for (let b = Math.floor(BINS * 0.3); b < Math.floor((armBottom / height) * BINS) - 1; b++) torsoBins.push(ext[b]);
+    torsoBins.sort((a, b) => a - b);
+    const torsoHalf = torsoBins.length ? torsoBins[Math.floor(torsoBins.length / 2)] : maxExt * 0.3;
+    const hasArms = maxExt > torsoHalf * 1.5 && torsoHalf > 0.02;
+    const shoulderY = (armBottom + armTop) / 2;
+    const L = Math.max(0.1, maxExt - torsoHalf * 1.1);
+    const handY = hasArms ? shoulderY - L * Math.sin(POSE_DOWN) * Math.cos(POSE_FORWARD) : height * 0.6;
+    const handZ = hasArms ? L * Math.sin(POSE_DOWN) * Math.sin(POSE_FORWARD) : 0.3;
+    return { geo, mat, orig, n, armBottom, armTop, torsoHalf, hasArms, hipY: height * 0.44, shoulderY, handY, handZ };
+  }, [scene, gl, height]);
+
+  useFrame((_, delta) => {
+    if (!rig || !meshRef.current) return;
+    const moving = isMoving.current;
+    walk.current += delta * (moving ? 9 : 0);
+    const sw = Math.sin(walk.current);
+    recoil.current += ((isShooting.current ? 1 : 0) - recoil.current) * Math.min(1, delta * 20);
+    // Standing still and not firing: the pose is already set, skip the per-vertex work
+    const needsUpdate = moving || wasMoving.current || recoil.current > 0.01 || !posed.current;
+    wasMoving.current = moving;
+    if (!needsUpdate) return;
+    posed.current = true;
+    frame.current++;
+    const { orig, n, armBottom, armTop, torsoHalf, hasArms, hipY, shoulderY, handY, handZ } = rig;
+    const arr = rig.geo.attributes.position.array as Float32Array;
+    const armThr = torsoHalf * 1.1;
+    const armSpan = Math.max(0.05, torsoHalf * 0.4);
+    const band = height * 0.07;
+    const sat = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+    const legSplit = Math.max(0.03, torsoHalf * 0.35);
+    const legAmp = moving ? 0.5 : 0;
+    const kick = recoil.current * 0.08;
+
+    for (let i = 0; i < n; i++) {
+      const ix = i * 3;
+      const ox = orig[ix], oy = orig[ix + 1], oz = orig[ix + 2];
+      let px = ox, py = oy, pz = oz;
+
+      if (hasArms) {
+        const wx = sat((Math.abs(ox) - armThr) / armSpan);
+        if (wx > 0) {
+          const wy = sat(1 - Math.max(armBottom - band - oy, oy - (armTop + band), 0) / band);
+          const w = wx * wy;
+          if (w > 0) {
+            const sgn = ox < 0 ? -1 : 1;
+            // Vector from the shoulder pivot to this vertex
+            const vx = ox - sgn * armThr, vy = oy - shoulderY, vz = oz;
+            // 1) swing the arm down from the T-pose (rotate about z)
+            const th = -sgn * POSE_DOWN;
+            const x1 = vx * Math.cos(th) - vy * Math.sin(th);
+            const y1 = vx * Math.sin(th) + vy * Math.cos(th);
+            // 2) swing it forward so the hands hold the gun out front (rotate about x)
+            const al = -POSE_FORWARD;
+            const y2 = y1 * Math.cos(al) - vz * Math.sin(al);
+            const z2 = y1 * Math.sin(al) + vz * Math.cos(al);
+            // hands drawn in toward the centre line, recoil kick on shooting
+            const nx = sgn * armThr * 0.8 + x1 * 0.6;
+            px = ox * (1 - w) + nx * w;
+            py = oy * (1 - w) + (shoulderY + y2) * w;
+            pz = oz * (1 - w) + (z2 - kick) * w;
+          }
+        }
+      }
+
+      if (oy < hipY && legAmp > 0) {
+        const wl = sat((hipY - oy) / (height * 0.12));
+        const side = Math.max(-1, Math.min(1, ox / legSplit));
+        const ang = -side * sw * legAmp * wl;
+        const c = Math.cos(ang), s2 = Math.sin(ang);
+        const dy = oy - hipY;
+        py = hipY + dy * c - oz * s2;
+        pz = dy * s2 + oz * c;
+      }
+      arr[ix] = px; arr[ix + 1] = py; arr[ix + 2] = pz;
+    }
+    rig.geo.attributes.position.needsUpdate = true;
+    if (frame.current % 3 === 0 || !moving) rig.geo.computeVertexNormals();
+    if (gunRef.current) { gunRef.current.position.set(0, handY + (moving ? Math.abs(sw) * 0.02 : 0), handZ - kick * 2); }
+  });
+
+  if (!rig) return null;
+  return (
+    <group>
+      <mesh ref={meshRef} geometry={rig.geo} material={rig.mat} castShadow receiveShadow frustumCulled={false} />
+      {renderWeapon && (
+        <group ref={gunRef} position={[0, rig.handY, rig.handZ]} scale={[0.5, 0.5, 0.5]}>
+          <group rotation={[0, Math.PI, 0]}>
+            <GLBBoundary fallback={null}>
+              <Suspense fallback={null}>{renderWeapon()}</Suspense>
+            </GLBBoundary>
+          </group>
+        </group>
+      )}
+    </group>
+  );
+};
+
+const AvatarFallback: React.FC = () => (
+  <group>
+    <mesh position={[0, 1.0, 0]}><boxGeometry args={[0.6, 0.9, 0.4]} /><meshStandardMaterial color="#4d7c0f" /></mesh>
+    <mesh position={[0, 1.7, 0]}><boxGeometry args={[0.4, 0.4, 0.4]} /><meshStandardMaterial color="#4d7c0f" /></mesh>
+    <mesh position={[-0.2, 0.35, 0]}><boxGeometry args={[0.22, 0.7, 0.22]} /><meshStandardMaterial color="#365314" /></mesh>
+    <mesh position={[0.2, 0.35, 0]}><boxGeometry args={[0.22, 0.7, 0.22]} /><meshStandardMaterial color="#365314" /></mesh>
+  </group>
+);
+
 // Third-person body used when a custom map sets playerAvatar (zombies, bosses, R9S characters).
 export const PlayerAvatar: React.FC<{
   avatarId: string;
   playerPos: THREE.Vector3;
   isDowned?: boolean;
-}> = ({ avatarId, playerPos, isDowned }) => {
+  renderWeapon?: () => React.ReactNode;
+  isShootingRef?: React.MutableRefObject<boolean>;
+}> = ({ avatarId, playerPos, isDowned, renderWeapon, isShootingRef }) => {
+  const isMoving = useRef(false);
+  const noShoot = useRef(false);
   const root = useRef<THREE.Group>(null);
   const body = useRef<THREE.Group>(null);
   const last = useRef(new THREE.Vector3());
@@ -208,6 +384,7 @@ export const PlayerAvatar: React.FC<{
     walk.current += Math.min(speed, 12) * delta * 1.5;
     if (body.current) {
       const moving = speed > 0.5;
+      isMoving.current = moving;
       body.current.position.y = moving ? Math.abs(Math.sin(walk.current * 2)) * 0.08 : 0;
       body.current.rotation.z = moving ? Math.sin(walk.current * 2) * 0.05 : 0;
       body.current.rotation.x = isDowned ? -Math.PI / 2.2 : 0;
@@ -218,10 +395,10 @@ export const PlayerAvatar: React.FC<{
   return (
     <group ref={root}>
       <group ref={body}>
-        <GLBBoundary fallback={null}>
+        <GLBBoundary fallback={<AvatarFallback />}>
           <Suspense fallback={null}>
-            {avatarId === 'biohazard_armor' && <GLBProp url="/assets/r9s/biohazard_armor.glb" size={[0, h, 0]} mode="height" anchor="base" />}
-            {avatarId === 'zombie_pickle' && <GLBProp url="/assets/zombies/zombie_pickle.glb" size={[0, h, 0]} mode="height" anchor="base" />}
+            {avatarId === 'biohazard_armor' && <PosedGLBBody url="/assets/r9s/biohazard_armor.glb" height={h} renderWeapon={renderWeapon} isMoving={isMoving} isShooting={isShootingRef || noShoot} />}
+            {avatarId === 'zombie_pickle' && <PosedGLBBody url="/assets/zombies/zombie_pickle.glb" height={h} renderWeapon={renderWeapon} isMoving={isMoving} isShooting={isShootingRef || noShoot} />}
             {zombieVariant && <Normalized height={h}><Zombie3D variant={zombieVariant as any} /></Normalized>}
             {avatarId === 'boss_dragon' && <Normalized height={h}><Dragon3D /></Normalized>}
             {avatarId === 'boss_elephant' && <Normalized height={h}><Elephant3D /></Normalized>}

@@ -1,6 +1,60 @@
 import { MODEL_DEFAULTS } from './modelDefaults';
 import { MapConfig, MapObject, InteractableConfig, CommunityMapEntry, CustomZombieConfig, CustomSkinConfig } from './types';
 
+// ---------------------------------------------------------------------------
+// Floor snapping: things that are meant to stand on the ground always do.
+// ---------------------------------------------------------------------------
+const FLOORABLE: MapObject['type'][] = ['box', 'wall', 'cylinder', 'pyramid', 'custom', 'building'];
+
+// Puts one object's bottom exactly on the floor (y = 0).
+// force=false : only fixes objects that are (almost) on the floor already - sunk in, or hovering a little.
+//               Intentionally raised pieces (roofs, platforms) and flat sunken floor tiles are left alone.
+// force=true  : always drops it to the floor.
+export const floorObject = (o: MapObject, force = false): MapObject => {
+  if (!FLOORABLE.includes(o.type) || !o.args) return o;
+  // Tilted pieces (ramps) keep their height
+  if (Math.abs(o.rotation?.[0] || 0) > 0.01 || Math.abs(o.rotation?.[2] || 0) > 0.01) return o;
+  const h = o.args[1];
+  const bottom = o.pos[1] - h / 2;
+  const top = o.pos[1] + h / 2;
+  if (!force) {
+    if (top <= 0.15) return o;                 // flat floor tile sunk into the ground on purpose
+    if (bottom > 0.6 || bottom < -1.5) return o; // deliberately raised / deeply buried
+  }
+  const y = Math.round((h / 2) * 1000) / 1000;
+  if (Math.abs(o.pos[1] - y) < 0.001) return o;
+  return { ...o, pos: [o.pos[0], y, o.pos[2]] };
+};
+
+// Applies floorObject to every object of a map. Returns the same map object if nothing changed.
+export const floorMapObjects = (map: MapConfig, force = false): MapConfig => {
+  if (!map.objects) return map;
+  let changed = false;
+  const objects = map.objects.map(o => {
+    const n = floorObject(o, force);
+    if (n !== o) changed = true;
+    return n;
+  });
+  return changed ? { ...map, objects } : map;
+};
+
+// Ready-made model zombies that can be added to a map's zombie mix with one tap (ids match the spawner assets in My Designs).
+export const MODEL_ZOMBIE_PRESETS: CustomZombieConfig[] = [
+  { id: 'cz_custom_zombie_pickle', name: 'Zombie Pickle', skinColor: '#4d7c0f', headColor: '#4d7c0f', eyeColor: '#ff0000', speedMultiplier: 1, hpMultiplier: 1, hat: 'none', modelUrl: '/assets/zombies/zombie_pickle.glb', modelScale: 1 },
+  { id: 'cz_custom_zombie_biohazard', name: 'R9S Boss (Biohazard Armor)', skinColor: '#65a30d', headColor: '#65a30d', eyeColor: '#ff0000', speedMultiplier: 1, hpMultiplier: 1, hat: 'none', modelUrl: '/assets/r9s/biohazard_armor.glb', modelScale: 1 },
+];
+
+// Built-in zombie kinds a map's zombie mix can use.
+export const BUILTIN_ZOMBIE_KINDS: { id: string; name: string }[] = [
+  { id: 'normal', name: 'Normal' },
+  { id: 'runner', name: 'Runner' },
+  { id: 'tank', name: 'Tank' },
+  { id: 'inferno', name: 'Inferno' },
+  { id: 'parasite', name: 'Parasite (flyer)' },
+  { id: 'crawler', name: 'Crawler' },
+  { id: 'brute', name: 'Brute' },
+];
+
 export interface AssetCategory {
   id: string;
   name: string;

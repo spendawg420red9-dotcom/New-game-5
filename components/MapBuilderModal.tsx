@@ -9,7 +9,7 @@ import {
   ArrowDown, ArrowLeft, ArrowRight, Palette, Share2, Search,
   Undo2, Redo2, Shield, Flame, Crosshair, Users, Globe, ExternalLink
 } from 'lucide-react';
-import { MapConfig, MapObject, InteractableConfig, CustomZombieConfig, CommunityMapEntry } from '../types';
+import { MapConfig, MapObject, InteractableConfig, CustomZombieConfig, CommunityMapEntry, ZombieMixEntry } from '../types';
 import { GLBProp, GLBBoundary } from './GLBProp';
 import { MODEL_DEFAULTS } from '../modelDefaults';
 import { UserModel, listUserModels, addUserModel, removeUserModel, subscribeUserModels } from '../userModels';
@@ -17,7 +17,7 @@ import {
   ASSET_CATALOG, ASSET_CATEGORIES, MAP_THEMES, PRESET_TEMPLATES, TEXTURE_PRESETS, PLAYER_AVATARS,
   AssetDefinition, TexturePreset, saveCustomMap, loadSavedCustomMaps, deleteCustomMap,
   loadUserCustomObjects, saveUserCustomObject, deleteUserCustomObject,
-  saveLocalCommunityMap
+  saveLocalCommunityMap, floorObject, floorMapObjects, BUILTIN_ZOMBIE_KINDS, MODEL_ZOMBIE_PRESETS
 } from '../customMapUtils';
 
 interface MapBuilderModalProps {
@@ -716,6 +716,8 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
     customZombies: initialMap.customZombies ? [...initialMap.customZombies] : [],
   }));
 
+  const [showSettings, setShowSettings] = useState(false);
+
   // View Mode: 2D Tactical Grid or 3D Interactive Studio
   const [viewMode, setViewMode] = useState<'3d' | '2d'>('3d');
   const [camPreset, setCamPreset] = useState<'iso' | 'top' | 'close' | 'ground'>('iso');
@@ -725,7 +727,9 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
   const [history, setHistory] = useState<MapConfig[]>([currentMap]);
   const [historyIndex, setHistoryIndex] = useState(0);
 
-  const pushHistory = (newMap: MapConfig) => {
+  const pushHistory = (rawMap: MapConfig) => {
+    // Everything stays on the floor automatically (turn off in Map Settings)
+    const newMap = rawMap.autoFloor === false ? rawMap : floorMapObjects(rawMap);
     const updated = history.slice(0, historyIndex + 1);
     updated.push(newMap);
     if (updated.length > 30) updated.shift();
@@ -871,12 +875,17 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
           modelUrl: selectedAsset.zombieModelUrl,
           modelScale: selectedAsset.zombieModelScale ?? 1,
         };
-        nextMap = { ...nextMap, customZombies: [modelZombie] };
+        const existing = nextMap.customZombies || [];
+        const customZombies = existing.some(c => c.id === modelZombie.id) ? existing : [...existing, modelZombie];
+        const mix = nextMap.zombieMix || [];
+        // First model zombie keeps the old behaviour (all zombies use it); more models mix in.
+        const zombieMix = mix.some(m => m.kind === modelZombie.id) ? mix : [...mix, { kind: modelZombie.id, weight: 1 }];
+        nextMap = { ...nextMap, customZombies, zombieMix };
       }
       pushHistory(nextMap);
       setSelectedItem({ type: 'spawn_zombie', index: currentMap.spawnPoints.length });
       showToast(selectedAsset.zombieModelUrl
-        ? `Added ${selectedAsset.name} spawner at [${snapX}, ${snapZ}] - zombies on this map use this model`
+        ? `Added ${selectedAsset.name} spawner at [${snapX}, ${snapZ}] - open Map Settings to set how many of each zombie spawn`
         : `Added Zombie Spawner at [${snapX}, ${snapZ}]`);
       return;
     }
@@ -1051,6 +1060,50 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
       pushHistory({ ...currentMap, interactables: items });
       showToast('Rotated station 90°');
     }
+  };
+
+  // ---- Map settings: brightness, floor, zombie mix ----
+  const setBrightness = (v: number) => setCurrentMap(m => ({ ...m, brightness: v }));
+  const commitBrightness = () => pushHistory({ ...currentMap });
+  const dropAllToFloor = () => {
+    const next = floorMapObjects(currentMap, true);
+    pushHistory({ ...next });
+    showToast('Everything dropped to the floor');
+  };
+  const dropSelectedToFloor = () => {
+    if (!selectedItem || selectedItem.type !== 'object') { showToast('Select an object first'); return; }
+    const objs = [...currentMap.objects];
+    objs[selectedItem.index] = floorObject(objs[selectedItem.index], true);
+    pushHistory({ ...currentMap, objects: objs });
+    showToast('Dropped to the floor');
+  };
+  const mixList = (): ZombieMixEntry[] => currentMap.zombieMix || [];
+  const setMix = (mix: ZombieMixEntry[]) => pushHistory({ ...currentMap, zombieMix: mix });
+  const mixWeight = (kind: string) => mixList().find(m => m.kind === kind)?.weight ?? 0;
+  // Makes sure a ready-made model zombie (Pickle, R9S Boss) exists in the map before it is used in the mix
+  const withModelZombie = (kind: string): CustomZombieConfig[] => {
+    const have = currentMap.customZombies || [];
+    const preset = MODEL_ZOMBIE_PRESETS.find(p => p.id === kind);
+    return preset && !have.some(c => c.id === kind) ? [...have, preset] : have;
+  };
+  const changeMixWeight = (kind: string, delta: number) => {
+    const list = mixList();
+    const cur = list.find(m => m.kind === kind);
+    const w = Math.max(0, Math.min(20, (cur?.weight ?? 0) + delta));
+    const customZombies = withModelZombie(kind);
+    let zombieMix: ZombieMixEntry[];
+    if (!cur) zombieMix = w > 0 ? [...list, { kind, weight: w }] : list;
+    else zombieMix = w === 0 ? list.filter(m => m.kind !== kind) : list.map(m => m.kind === kind ? { ...m, weight: w } : m);
+    pushHistory({ ...currentMap, customZombies, zombieMix });
+  };
+  const onlyThisZombie = (kind: string) => pushHistory({ ...currentMap, customZombies: withModelZombie(kind), zombieMix: [{ kind, weight: 1 }] });
+  const clearZombieMix = () => { pushHistory({ ...currentMap, zombieMix: [] }); showToast('Back to normal round zombies'); };
+  const removeCustomZombie = (id: string) => {
+    pushHistory({
+      ...currentMap,
+      customZombies: (currentMap.customZombies || []).filter(c => c.id !== id),
+      zombieMix: mixList().filter(m => m.kind !== id),
+    });
   };
 
   // Move selected item
@@ -1319,6 +1372,14 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
               </optgroup>
             ))}
           </select>
+
+          <button
+            onClick={() => setShowSettings(v => !v)}
+            className={`shrink-0 py-2 px-3 text-xs font-black uppercase tracking-wider rounded-lg border transition-colors ${showSettings ? 'bg-yellow-500 text-black border-yellow-300' : 'bg-zinc-800 text-white border-white/10 hover:bg-zinc-700'}`}
+            title="Brightness, floor and zombie settings"
+          >
+            ⚙ Map Settings
+          </button>
         </div>
 
         {/* Right: Publish, Save & Play Buttons */}
@@ -1356,6 +1417,100 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
           </button>
         </div>
       </header>
+
+      {/* --- MAP SETTINGS PANEL: brightness, floor, zombies --- */}
+      {showSettings && (
+        <div className="fixed top-16 right-2 left-2 sm:left-auto sm:w-[380px] max-h-[75vh] overflow-y-auto z-[200] bg-zinc-900/98 border border-yellow-500/40 rounded-xl shadow-2xl p-4 space-y-5">
+          <div className="flex items-center justify-between">
+            <span className="text-yellow-400 font-black uppercase tracking-wider text-sm">⚙ Map Settings</span>
+            <button onClick={() => setShowSettings(false)} className="text-white/60 hover:text-white text-lg leading-none px-2">✕</button>
+          </div>
+
+          {/* Brightness */}
+          <div className="space-y-2">
+            <label className="flex items-center justify-between text-[11px] font-bold text-white/70 uppercase">
+              <span>☀ Map Brightness</span>
+              <span className="text-yellow-300">{Math.round((currentMap.brightness ?? 1) * 100)}%</span>
+            </label>
+            <input
+              type="range" min={0.2} max={3} step={0.05}
+              value={currentMap.brightness ?? 1}
+              onChange={(e) => setBrightness(Number(e.target.value))}
+              onPointerUp={commitBrightness}
+              onTouchEnd={commitBrightness}
+              onKeyUp={commitBrightness}
+              className="w-full accent-yellow-400"
+            />
+            <div className="flex gap-2">
+              {[{ n: 'Dark', v: 0.5 }, { n: 'Normal', v: 1 }, { n: 'Bright', v: 1.6 }, { n: 'Max', v: 2.5 }].map(b => (
+                <button key={b.n} onClick={() => pushHistory({ ...currentMap, brightness: b.v })}
+                  className="flex-1 py-1.5 text-[11px] font-black uppercase bg-zinc-800 hover:bg-zinc-700 rounded border border-white/10">{b.n}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Floor */}
+          <div className="space-y-2">
+            <div className="text-[11px] font-bold text-white/70 uppercase">🧱 Floor</div>
+            <label className="flex items-center gap-2 text-xs text-white/80">
+              <input
+                type="checkbox"
+                checked={currentMap.autoFloor !== false}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  const next = { ...currentMap, autoFloor: on };
+                  pushHistory(on ? floorMapObjects(next) : next);
+                }}
+              />
+              Keep everything on the floor automatically
+            </label>
+            <div className="flex gap-2">
+              <button onClick={dropAllToFloor} className="flex-1 py-2 text-[11px] font-black uppercase bg-emerald-700 hover:bg-emerald-600 rounded">Drop ALL to floor</button>
+              <button onClick={dropSelectedToFloor} className="flex-1 py-2 text-[11px] font-black uppercase bg-zinc-700 hover:bg-zinc-600 rounded">Drop selected</button>
+            </div>
+          </div>
+
+          {/* Zombie mix */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-white/70 uppercase">🧟 Zombies that spawn</span>
+              <button onClick={clearZombieMix} className="text-[10px] font-black uppercase text-red-300 hover:text-red-200">Reset</button>
+            </div>
+            <p className="text-[10px] text-white/50 leading-snug">
+              Use + / − to set how many of each type spawn (more = more of them). One type only = every zombie is that type. Nothing set = normal round zombies.
+            </p>
+            {(() => {
+              const total = mixList().reduce((a, m) => a + m.weight, 0);
+              const haveIds = new Set((currentMap.customZombies || []).map(c => c.id));
+              const rows = [
+                ...MODEL_ZOMBIE_PRESETS.map(c => ({ id: c.id, name: c.name, custom: haveIds.has(c.id) })),
+                ...(currentMap.customZombies || []).filter(c => !MODEL_ZOMBIE_PRESETS.some(p => p.id === c.id)).map(c => ({ id: c.id, name: `${c.name}${c.modelUrl ? ' (model)' : ''}`, custom: true })),
+                ...BUILTIN_ZOMBIE_KINDS.map(k => ({ id: k.id, name: k.name, custom: false })),
+              ];
+              return rows.map(r => {
+                const w = mixWeight(r.id);
+                const pct = total > 0 ? Math.round((w / total) * 100) : 0;
+                return (
+                  <div key={r.id} className={`flex items-center gap-2 p-2 rounded-lg border ${w > 0 ? 'bg-emerald-900/30 border-emerald-500/40' : 'bg-zinc-800/60 border-white/10'}`}>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-bold truncate">{r.name}</div>
+                      <div className="text-[10px] text-white/50">{w > 0 ? `${pct}% of spawns` : 'Off'}</div>
+                    </div>
+                    <button onClick={() => changeMixWeight(r.id, -1)} className="w-8 h-8 rounded bg-zinc-700 hover:bg-zinc-600 font-black">−</button>
+                    <span className="w-6 text-center text-sm font-black">{w}</span>
+                    <button onClick={() => changeMixWeight(r.id, 1)} className="w-8 h-8 rounded bg-zinc-700 hover:bg-zinc-600 font-black">+</button>
+                    <button onClick={() => onlyThisZombie(r.id)} className="px-2 h-8 rounded bg-yellow-600 hover:bg-yellow-500 text-black text-[10px] font-black uppercase">Only</button>
+                    {r.custom && <button onClick={() => removeCustomZombie(r.id)} className="w-8 h-8 rounded bg-red-900/60 hover:bg-red-800 text-xs" title="Remove this zombie">🗑</button>}
+                  </div>
+                );
+              });
+            })()}
+            <p className="text-[10px] text-white/40 leading-snug">
+              Pickle and R9S Boss zombies are here too. Placing zombie spawners on the map is still needed for where they spawn.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* --- GUIDED BUILDER STATUS BAR --- */}
       <div className="h-9 bg-zinc-950 border-b border-white/5 px-4 flex items-center justify-between text-xs font-mono shrink-0 overflow-x-auto">
@@ -2103,9 +2258,11 @@ const DesignStudioModal: React.FC<DesignStudioModalProps> = ({
       hat: zombieHat,
       textureType: 'cyber',
     };
+    // Added alongside any other custom zombies (Pickle, R9S Boss...) and put in the spawn mix
     onUpdateMap({
       ...currentMap,
-      customZombies: [customZ],
+      customZombies: [...(currentMap.customZombies || []), customZ],
+      zombieMix: [...(currentMap.zombieMix || []), { kind: customZ.id, weight: 1 }],
     });
     onClose();
   };

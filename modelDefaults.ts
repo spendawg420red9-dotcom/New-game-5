@@ -17,7 +17,9 @@ export const MODEL_DEFAULTS: Record<string, ModelDefaults> = {
     colliders: [
       [0, -0.38, 1.0, 0.07],
       [-0.474, 0.043, 0.045, 0.92],
-      [0.474, 0.043, 0.045, 0.92],
+      // Right side (+x): the big hole in the wall spans z -0.31..+0.40 of the depth, so only the two end posts are solid
+      [0.474, -0.36, 0.045, 0.12],
+      [0.474, 0.45, 0.045, 0.10],
       [-0.295, 0.446, 0.39, 0.09],
       [0.295, 0.446, 0.39, 0.09],
     ],
