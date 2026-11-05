@@ -1,0 +1,10 @@
+{
+  "name": "Red9\u0026Spendawg:",
+  "description": "A mobile-optimized 3D zombie survival experience inspired by Black Ops 2\u0027s Town. Survive rounds, navigate lava hazards, and use points to upgrade your arsenal.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
