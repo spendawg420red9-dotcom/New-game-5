@@ -7,6 +7,11 @@ import { CALLING_CARDS, isCallingCardUnlocked } from './callingCards';
 import { Joystick } from './components/Joystick';
 import { Scene } from './components/Scene';
 import { Minimap } from './components/Minimap';
+import { CrosshairView, CrosshairPanel, HudVisibilityPanel, EyeIcon } from './components/HudControls';
+import {
+  CrosshairSettings, DEFAULT_HUD_VISIBILITY, HUD_PRESET_CYCLE, HUD_QUICK_CYCLE, HUD_VISIBILITY_STORAGE_KEY, CROSSHAIR_STORAGE_KEY,
+  HudPatch, HudVisibility, detectHudPreset, hudPresetLabel, hudPresetPatch, loadCrosshair, loadHudVisibility, nextHudPreset, sanitizeCrosshair, sanitizeHudVisibility, toHudView, writeStored,
+} from './hudOptions';
 import { EnemyDisplay } from './components/EnemyDisplay';
 import { Zombie3D, Dragon3D, Elephant3D, Ogre3D, Worm3D, MushroomKeeper3D } from './components/Enemy3DModels';
 import ShopItemPreview from './components/ShopItemPreview';
@@ -2695,8 +2700,18 @@ const App: React.FC = () => {
   const respawnShieldExpiry = useRef(0);
   const lastEmergencyShieldTime = useRef(0);
   const previousWeaponRef = useRef<{name: string, ammo: number, maxAmmo: number, tier: number} | null>(null);
-  const [hudMode, setHudMode] = useState<'all' | 'info' | 'hidden'>('all');
-  const [showCrosshair, setShowCrosshair] = useState(true);
+  // HUD visibility (what is on screen) and the crosshair look. Saved on this device, separate from the HUD layout in hudSettings.
+  const [hudVis, setHudVis] = useState<HudVisibility>(loadHudVisibility);
+  const [crosshair, setCrosshair] = useState<CrosshairSettings>(loadCrosshair);
+  const [hudPreview, setHudPreview] = useState(false); // pause-settings "Preview on screen": menu hidden, real HUD shown
+  const [hudToast, setHudToast] = useState<string | null>(null); // "HUD: MINIMAL" flash from the quick toggle
+  const [hudAwake, setHudAwake] = useState(true); // false = auto-fade has faded the info HUD out
+  const hudPreviewAt = useRef(0);
+  const hudToastTimer = useRef<number | null>(null);
+  // The keyboard menu handler below is only re-registered when its deps change, so it calls the HUD actions through this ref.
+  const hudActionsRef = useRef<{ cyclePreset: () => void; toggleCrosshair: () => void }>({ cyclePreset: () => {}, toggleCrosshair: () => {} });
+  useEffect(() => { writeStored(HUD_VISIBILITY_STORAGE_KEY, hudVis); }, [hudVis]);
+  useEffect(() => { writeStored(CROSSHAIR_STORAGE_KEY, crosshair); }, [crosshair]);
   const [showPauseSettings, setShowPauseSettings] = useState(false);
   const [showControlsMenu, setShowControlsMenu] = useState(false);
   const [showProgressMenu, setShowProgressMenu] = useState(false);
@@ -3021,7 +3036,7 @@ const App: React.FC = () => {
     return INITIAL_HUD_SETTINGS;
   });
 
-  const [savedHudProfiles, setSavedHudProfiles] = useState<{name: string, settings: HUDSettings}[]>(() => {
+  const [savedHudProfiles, setSavedHudProfiles] = useState<{name: string, settings: HUDSettings, visibility?: HudVisibility, crosshair?: CrosshairSettings}[]>(() => {
     const saved = localStorage.getItem('ztown_saved_hud_profiles');
     if (saved) {
       try {
@@ -3711,8 +3726,9 @@ const App: React.FC = () => {
           }
         } else if (isSettings) {
           if (selectedMenuIndex === 0) status === GameStatus.PAUSED ? setShowPauseSettings(false) : setStatus(GameStatus.START);
-          else if (selectedMenuIndex === 1) setHudMode(prev => prev === 'all' ? 'info' : prev === 'info' ? 'hidden' : 'all');
-          else if (selectedMenuIndex >= 2 && selectedMenuIndex <= 11) {
+          else if (selectedMenuIndex === 1) hudActionsRef.current.cyclePreset();
+          else if (selectedMenuIndex === 2) hudActionsRef.current.toggleCrosshair();
+          else if (selectedMenuIndex >= 3 && selectedMenuIndex <= 11) {
             const camos = ['none', 'gilded', 'crystal', 'void_matter', 'sakura', 'wyvern', 'frost', 'lava', 'galaxy', 'prism'] as const;
             setStats(prev => ({ ...prev, selectedCamo: camos[selectedMenuIndex - 2] }));
           }
@@ -3784,7 +3800,7 @@ const App: React.FC = () => {
 
     window.addEventListener('keydown', handleMenuNav);
     return () => window.removeEventListener('keydown', handleMenuNav);
-  }, [status, showPauseSettings, showModMenu, showProgressMenu, showControlsMenu, selectedWeaponInfo, keybindSettings, selectedMenuIndex, leaderboard, hudMode, infoTab, heartPositions, loadoutCategory, customGameConfig, filteredWeapons]);
+  }, [status, showPauseSettings, showModMenu, showProgressMenu, showControlsMenu, selectedWeaponInfo, keybindSettings, selectedMenuIndex, leaderboard, infoTab, heartPositions, loadoutCategory, customGameConfig, filteredWeapons]);
 
   useEffect(() => {
     const el = document.getElementById(`menu-item-${selectedMenuIndex}`);
@@ -6157,6 +6173,108 @@ const App: React.FC = () => {
   const isDeathMachineActive = deathMachineExpiry > now;
   const isHealthRefillLocked = interactPrompt?.id === 'healthRefill' && stats.healthRefillsBought >= 3;
 
+  // ---------------------------------------------------------------------------
+  // HUD visibility + crosshair (options: hudOptions.ts, settings panels: components/HudControls.tsx)
+  // ---------------------------------------------------------------------------
+  const hudMinimapOn = hudSettings?.minimapVisible ?? true;
+  const hudView = toHudView(hudVis, hudMinimapOn);
+  // The real HUD is on screen while playing, and while the pause-settings "Preview on screen" is open.
+  const hudLive = status === GameStatus.PLAYING || (status === GameStatus.PAUSED && hudPreview);
+
+  // The minimap switch lives in hudSettings (it always has); every other HUD switch lives in hudVis.
+  const applyHudPatch = (patch: HudPatch) => {
+    const { minimap, ...rest } = patch;
+    if (minimap !== undefined) setHudSettings(prev => ({ ...prev, minimapVisible: minimap }));
+    if (Object.keys(rest).length > 0) setHudVis(prev => sanitizeHudVisibility({ ...prev, ...rest }));
+  };
+  const resetHudVisibility = () => {
+    setHudVis({ ...DEFAULT_HUD_VISIBILITY });
+    setHudSettings(prev => ({ ...prev, minimapVisible: true }));
+  };
+  const cycleHudPreset = () => applyHudPatch(hudPresetPatch(nextHudPreset(hudView, HUD_PRESET_CYCLE)));
+  const startHudPreview = () => {
+    hudPreviewAt.current = Date.now();
+    setHudPreview(true);
+  };
+  const flashHudToast = (text: string) => {
+    setHudToast(text);
+    if (hudToastTimer.current !== null) window.clearTimeout(hudToastTimer.current);
+    hudToastTimer.current = window.setTimeout(() => setHudToast(null), 1400);
+  };
+  // Eye button (and F1 on PC): All -> Minimal -> Buttons Only -> Hidden.
+  const cycleHudQuick = () => {
+    const next = nextHudPreset(hudView, HUD_QUICK_CYCLE);
+    applyHudPatch(hudPresetPatch(next));
+    flashHudToast(`HUD: ${hudPresetLabel(next).toUpperCase()}`);
+  };
+  hudActionsRef.current = {
+    cyclePreset: cycleHudPreset,
+    toggleCrosshair: () => setCrosshair(prev => ({ ...prev, visible: !prev.visible })),
+  };
+  const hudHotkeyRef = useRef<() => boolean>(() => false);
+  hudHotkeyRef.current = () => {
+    if (status !== GameStatus.PLAYING || !hudVis.quickToggle) return false;
+    cycleHudQuick();
+    return true;
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'F1' || e.repeat) return;
+      if (hudHotkeyRef.current()) e.preventDefault();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  useEffect(() => () => {
+    if (hudToastTimer.current !== null) window.clearTimeout(hudToastTimer.current);
+  }, []);
+
+  // "Preview on screen" only exists while the pause-menu settings are open. Any key press (or a tap) leaves it.
+  useEffect(() => {
+    if (hudPreview && !(status === GameStatus.PAUSED && showPauseSettings)) setHudPreview(false);
+  }, [hudPreview, status, showPauseSettings]);
+  useEffect(() => {
+    if (!hudPreview) return;
+    const leave = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || /^F\d+$/.test(e.key)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (Date.now() - hudPreviewAt.current > 350) setHudPreview(false);
+    };
+    window.addEventListener('keydown', leave, true);
+    return () => window.removeEventListener('keydown', leave, true);
+  }, [hudPreview]);
+
+  // Auto-fade: wake the info HUD when something that matters changes, fade it out after N idle seconds.
+  const hudWakeKey = `${stats.hp}|${stats.points}|${stats.round}|${stats.ammo}|${stats.weaponName}|${stats.perks.length}|${isReloading ? 1 : 0}|${stats.isDowned ? 1 : 0}`;
+  useEffect(() => {
+    setHudAwake(true);
+    if (hudVis.autoFadeSeconds <= 0 || status !== GameStatus.PLAYING) return;
+    const timer = window.setTimeout(() => setHudAwake(false), hudVis.autoFadeSeconds * 1000);
+    return () => window.clearTimeout(timer);
+  }, [hudWakeKey, hudVis.autoFadeSeconds, status]);
+  const hudFaded = hudVis.autoFadeSeconds > 0 && !hudAwake && status === GameStatus.PLAYING;
+  const hudInfoOpacity = hudFaded ? 0 : hudVis.hudOpacity;
+  // Health stays up while you are hurt (or shielded), even when the rest of the info has faded.
+  const hudHealthOpacity = hudFaded && stats.hp >= stats.maxHp && !isShieldActive ? 0 : hudVis.hudOpacity;
+
+  // If a touch control is switched off while a finger is on it, don't leave its input stuck "on".
+  useEffect(() => {
+    if (hudVis.joystick) return;
+    moveInput.current = { x: 0, y: 0 };
+    joystickActive.current = false;
+    sprintRequest.current = false;
+    setIsSprinting(false);
+  }, [hudVis.joystick]);
+  useEffect(() => {
+    if (hudVis.shoot) return;
+    phoneShootRequest.current = false;
+    keyboardLookInput.current = { x: 0, y: 0 };
+  }, [hudVis.shoot]);
+  useEffect(() => {
+    if (!hudVis.knife) knifeRequest.current = false;
+  }, [hudVis.knife]);
+
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
@@ -6710,21 +6828,21 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
-      <div className="absolute inset-0 pointer-events-none z-10 transition-opacity duration-300 shadow-[inset_0_0_150px_rgba(153,0,0,1)]" style={{ opacity: bloodOverlay }} />
+      {hudVis.bloodScreen && <div className="absolute inset-0 pointer-events-none z-10 transition-opacity duration-300 shadow-[inset_0_0_150px_rgba(153,0,0,1)]" style={{ opacity: bloodOverlay }} />}
       {/* Cyan Shield vignette overlay */}
       <div className="absolute inset-0 pointer-events-none z-10 transition-opacity duration-500 shadow-[inset_0_0_120px_rgba(34,211,238,0.75)] animate-pulse" style={{ opacity: isShieldActive ? 0.8 : 0 }} />
-      <div className="absolute inset-0 pointer-events-none z-[60] bg-white transition-opacity duration-100" style={{ opacity: flashOverlay }} />
+      {hudVis.screenFlash && <div className="absolute inset-0 pointer-events-none z-[60] bg-white transition-opacity duration-100" style={{ opacity: flashOverlay }} />}
 
       {(status === GameStatus.PLAYING || status === GameStatus.PAUSED) && (
         <>
 
-          {showRoundSplash && (
+          {showRoundSplash && hudVis.roundBanner && (
             <div className="absolute inset-0 flex items-center justify-center z-50 pointer-events-none animate-in fade-in zoom-in duration-500">
                <h2 className="text-9xl font-black text-red-700 italic tracking-tighter drop-shadow-[0_0_40px_rgba(185,28,28,0.9)]">ROUND {stats.round}</h2>
             </div>
           )}
 
-          {levelUpNotif.show && (
+          {levelUpNotif.show && hudVis.levelUpBanner && (
             <div className="absolute top-[15%] left-1/2 -translate-x-1/2 z-50 flex flex-col items-center pointer-events-none animate-in slide-in-from-bottom-10 fade-in duration-500">
               <div className="bg-gradient-to-b from-yellow-400 to-yellow-600 text-transparent bg-clip-text font-black text-6xl uppercase italic tracking-widest drop-shadow-[0_0_30px_rgba(234,179,8,1)] flex items-center gap-4">
                 <Star className="w-12 h-12 text-yellow-400 fill-yellow-400 animate-pulse" />
@@ -6740,7 +6858,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {lastPerkGained && (
+          {lastPerkGained && hudVis.messages && (
             <div className="absolute top-1/3 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-in slide-in-from-bottom fade-in duration-500">
                <div className="bg-white/10 backdrop-blur-md px-6 py-2 rounded-full border border-white/20 shadow-2xl flex items-center gap-3">
                   <div className="w-8 h-8 bg-emerald-600 rounded-full flex items-center justify-center">
@@ -6751,7 +6869,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {dragonActive && (
+          {dragonActive && hudVis.bossBar && (
             <div 
               className="absolute z-50 pointer-events-none w-1/2 max-w-2xl flex flex-col items-center gap-2"
               style={{ 
@@ -6773,23 +6891,28 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {(hudMode === 'info' || hudMode === 'all') && (
-            <div 
+          {(hudVis.round || hudVis.zombies || hudVis.points || hudVis.level || hudVis.timer || hudVis.perks || hudVis.powerups) && (
+            <div
               className="absolute z-20 space-y-3 pointer-events-none"
-              style={{ top: hudSettings.statsPos.y, left: hudSettings.statsPos.x, transform: `scale(${hudSettings.hudScale})`, transformOrigin: 'top left' }}
+              style={{ top: hudSettings.statsPos.y, left: hudSettings.statsPos.x, transform: `scale(${hudSettings.hudScale})`, transformOrigin: 'top left', opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
             >
               {customGameConfig.gameMode !== 'multiplayer' && (
                 <>
+                  {hudVis.round && (
                   <div className="flex items-center gap-4 bg-black/60 px-5 py-2 rounded-sm border-l-4 border-red-700 backdrop-blur-md shadow-xl">
                      <Skull className="text-red-600 w-8 h-8" />
                      <span className="text-red-600 font-black text-4xl italic">{stats.round}</span>
                   </div>
+                  )}
+                  {hudVis.zombies && (
                   <div className="flex items-center gap-4 bg-black/60 px-5 py-2 rounded-sm border-l-4 border-orange-600 backdrop-blur-md shadow-xl">
                      <UserX className="text-orange-500 w-6 h-6" />
                      <span className="text-orange-400 font-black text-2xl italic">{stats.zombiesRemaining}</span>
                   </div>
+                  )}
                 </>
               )}
+              {hudVis.points && (
               <div className="flex flex-col gap-1 bg-black/60 px-5 py-2 rounded-sm border-l-4 border-emerald-500 backdrop-blur-md shadow-xl">
                  <div className="flex items-center gap-4">
                    <Database className="text-emerald-500 w-6 h-6" />
@@ -6799,6 +6922,8 @@ const App: React.FC = () => {
                    Total: {stats.totalPoints}
                  </div>
               </div>
+              )}
+              {hudVis.level && (
                              <div className="flex items-center gap-4 bg-black/60 px-5 py-2 rounded-sm border-l-4 border-yellow-500 backdrop-blur-md shadow-xl cursor-pointer hover:bg-black/80 transition-colors" onClick={() => setShowPlayerProfile(progression as any)}>
                  {progression.rankMastery > 0 ? getRankMasteryIcon(progression.rankMastery, 24) : <Star className="text-yellow-500 w-6 h-6" />}
                  <div className="flex flex-col">
@@ -6811,11 +6936,15 @@ const App: React.FC = () => {
                    {progression.rankMastery > 0 && <span className={`${getRankMasteryColor(progression.rankMastery)} font-black text-[10px] uppercase tracking-widest whitespace-nowrap`}>Rank Mastery {progression.rankMastery}</span>}
                  </div>
               </div>
+              )}
+              {hudVis.timer && (
               <div className="flex items-center gap-4 bg-black/60 px-5 py-2 rounded-sm border-l-4 border-blue-500 backdrop-blur-md shadow-xl">
                  <Timer className="text-blue-500 w-6 h-6" />
                  <span className="text-blue-400 font-black text-2xl italic">{formatTime(stats.time)}</span>
               </div>
+              )}
               
+              {hudVis.perks && (
               <div className="flex gap-2 pt-2">
                 {stats.perks.includes('jugg') && (
                   <div className="w-12 h-12 bg-red-600/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(220,38,38,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
@@ -6913,7 +7042,9 @@ const App: React.FC = () => {
                   </div>
                 )}
               </div>
+              )}
 
+              {hudVis.powerups && (
               <div className="flex flex-col gap-2 pt-2">
                  {isInstaKillActive && (
                    <div className="flex items-center gap-3 bg-red-600/90 text-white px-4 py-1.5 rounded-full border border-white/30 shadow-lg animate-pulse backdrop-blur-sm">
@@ -6961,6 +7092,7 @@ const App: React.FC = () => {
                    </div>
                  )}
               </div>
+              )}
             </div>
           )}
 
@@ -6975,13 +7107,24 @@ const App: React.FC = () => {
             >
               {status === GameStatus.PAUSED ? <Play size={24} /> : <Pause size={24} />}
             </button>
+            {hudVis.quickToggle && hudLive && (
+              <button
+                onClick={(e) => { e.stopPropagation(); cycleHudQuick(); }}
+                aria-label="Switch HUD layout"
+                className="pointer-events-auto bg-white/10 p-2.5 rounded-full border border-white/20 backdrop-blur-md active:scale-90 transition-all text-white shadow-xl"
+                style={{ transform: `scale(${hudSettings.buttonScale})`, transformOrigin: 'top right', marginTop: 12 + 28 * Math.max(0, hudSettings.buttonScale - 1) }}
+              >
+                <EyeIcon size={24} off={detectHudPreset(hudView) === 'hidden'} />
+              </button>
+            )}
           </div>
 
-          {(hudMode === 'info' || hudMode === 'all') && (
+          {(hudVis.weapon || hudVis.health) && (
             <>
+              {hudVis.weapon && (
               <div 
                 className="absolute z-20 flex flex-col items-end gap-3 pointer-events-none text-right"
-                style={{ top: hudSettings.weaponPos.y, right: hudSettings.weaponPos.x, transform: `scale(${hudSettings.hudScale})`, transformOrigin: 'top right' }}
+                style={{ top: hudSettings.weaponPos.y, right: hudSettings.weaponPos.x, transform: `scale(${hudSettings.hudScale})`, transformOrigin: 'top right', opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
               >
                 <div className="flex flex-col items-end bg-black/60 px-3.5 py-2 rounded-sm border border-emerald-500/20 backdrop-blur-md shadow-[0_4px_24px_rgba(0,0,0,0.5)]">
                   <div className="text-[8px] font-black text-emerald-500/60 uppercase tracking-[0.2em] mb-1 flex items-center gap-1.5 justify-end" id="hud-weapon-label">
@@ -7004,10 +7147,12 @@ const App: React.FC = () => {
                   )}
                 </div>
               </div>
+              )}
 
+              {hudVis.health && (
               <div 
                 className="absolute z-20 pointer-events-none"
-                style={{ top: hudSettings.healthBarPos.y, left: hudSettings.healthBarPos.x, transform: `scale(${hudSettings.hudScale})`, transformOrigin: 'top left' }}
+                style={{ top: hudSettings.healthBarPos.y, left: hudSettings.healthBarPos.x, transform: `scale(${hudSettings.hudScale})`, transformOrigin: 'top left', opacity: hudHealthOpacity, transition: 'opacity 0.5s ease' }}
               >
                 <div className="flex items-center gap-3 bg-black/40 p-2 rounded-full border border-white/10 backdrop-blur-sm relative">
                   {isShieldActive ? (
@@ -7026,6 +7171,7 @@ const App: React.FC = () => {
                   </div>
                 </div>
               </div>
+              )}
             </>
           )}
 
@@ -7051,7 +7197,7 @@ const App: React.FC = () => {
             </>
           )}
 
-          <div id="minimap-root" className={`absolute z-50 pointer-events-none ${status === GameStatus.PLAYING && hudMode === 'all' ? '' : 'hidden'}`} />
+          <div id="minimap-root" className={`absolute z-50 pointer-events-none ${hudLive && hudMinimapOn ? '' : 'hidden'}`} style={{ opacity: hudVis.hudOpacity }} />
           
           {(status === GameStatus.PLAYING || status === GameStatus.PAUSED) && (
             <Minimap 
@@ -7067,13 +7213,14 @@ const App: React.FC = () => {
             />
           )}
 
-          {isTouchDevice && status === GameStatus.PLAYING && hudMode === 'all' && (
+          {isTouchDevice && hudLive && (
             <>
               {/* Scoreboard removed from HUD */}
 
+              {hudVis.joystick && (
               <div 
                 className="absolute z-30 pointer-events-auto"
-                style={{ bottom: hudSettings.joystickPos.y, left: hudSettings.joystickPos.x }}
+                style={{ bottom: hudSettings.joystickPos.y, left: hudSettings.joystickPos.x, opacity: hudVis.buttonOpacity }}
               >
                  <Joystick 
                    onMove={(x, y) => { 
@@ -7085,11 +7232,13 @@ const App: React.FC = () => {
                    scale={hudSettings.buttonScale * hudSettings.hudScale}
                  />
               </div>
+              )}
 
               {customGameConfig.gameMode === 'dead_ops' && (
+                hudVis.shoot && (
                 <div 
                   className="absolute z-30 pointer-events-auto"
-                  style={{ bottom: hudSettings.joystickPos.y, right: hudSettings.joystickPos.x }}
+                  style={{ bottom: hudSettings.joystickPos.y, right: hudSettings.joystickPos.x, opacity: hudVis.buttonOpacity }}
                 >
                    <Joystick 
                      onMove={(x, y) => { 
@@ -7100,40 +7249,48 @@ const App: React.FC = () => {
                      scale={hudSettings.buttonScale * hudSettings.hudScale}
                    />
                 </div>
+                )
               )}
 
               {isTouchDevice && customGameConfig.gameMode !== 'dead_ops' && (
                 <>
+                  {hudVis.grenade && (
                   <button 
                     onTouchStart={throwGrenade} 
                     onMouseDown={throwGrenade} 
                     className="absolute z-30 pointer-events-auto w-16 h-16 bg-gray-800/80 active:bg-gray-600 rounded-full flex flex-col items-center justify-center border-2 border-white/20 shadow-xl active:scale-90 transition-all backdrop-blur-md"
-                    style={{ bottom: hudSettings.grenadePos.y, left: hudSettings.grenadePos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left' }}
+                    style={{ bottom: hudSettings.grenadePos.y, left: hudSettings.grenadePos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity }}
                   >
                      <Bomb size={24} className="text-white" />
                      <span className="text-[10px] font-black text-white">{stats.grenades}</span>
                   </button>
+                  )}
 
+                  {hudVis.flashbang && (
                   <button 
                     onTouchStart={throwFlashbang} 
                     onMouseDown={throwFlashbang} 
                     className="absolute z-30 pointer-events-auto w-16 h-16 bg-yellow-800/80 active:bg-yellow-600 rounded-full flex flex-col items-center justify-center border-2 border-white/20 shadow-xl active:scale-90 transition-all backdrop-blur-md"
-                    style={{ bottom: hudSettings.flashbangPos.y, left: hudSettings.flashbangPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left' }}
+                    style={{ bottom: hudSettings.flashbangPos.y, left: hudSettings.flashbangPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity }}
                   >
                      <Sun size={24} className="text-white" />
                      <span className="text-[10px] font-black text-white">{stats.flashbangs}</span>
                   </button>
+                  )}
 
+                  {hudVis.kingRobbo && (
                   <button 
                     onTouchStart={throwKingRobbo} 
                     onMouseDown={throwKingRobbo} 
                     className="absolute z-30 pointer-events-auto w-16 h-16 bg-red-900/80 active:bg-red-700 rounded-full flex flex-col items-center justify-center border-2 border-white/20 shadow-xl active:scale-90 transition-all backdrop-blur-md"
-                    style={{ bottom: hudSettings.kingRobboPos.y, left: hudSettings.kingRobboPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left' }}
+                    style={{ bottom: hudSettings.kingRobboPos.y, left: hudSettings.kingRobboPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity }}
                   >
                      <BoxIcon size={24} className="text-white" />
                      <span className="text-[10px] font-black text-white">{stats.kingRobbos}</span>
                   </button>
+                  )}
 
+                  {hudVis.finisher && (
                   <button 
                     onTouchStart={() => {
                         if (stats.finisherCharge >= 100) {
@@ -7148,23 +7305,26 @@ const App: React.FC = () => {
                          }
                     }}
                     className={`absolute z-30 pointer-events-auto w-16 h-16 rounded-full flex flex-col items-center justify-center border-2 border-white/20 shadow-xl active:scale-90 transition-all backdrop-blur-md ${stats.finisherCharge >= 100 ? 'bg-red-900/80' : 'bg-gray-800/80 opacity-50'}`}
-                    style={{ bottom: hudSettings.finisherPos.y, left: hudSettings.finisherPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left' }}
+                    style={{ bottom: hudSettings.finisherPos.y, left: hudSettings.finisherPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity * (stats.finisherCharge >= 100 ? 1 : 0.5) }}
                   >
                      <Skull size={24} className="text-white" />
                      <span className="text-[10px] font-black text-white">{Math.min(100, Math.floor(stats.finisherCharge || 0))}%</span>
                   </button>
+                  )}
                 </>
               )}
 
               {/* Gem Counter for Dead Ops */}
               {customGameConfig.gameMode === 'dead_ops' && (
+                hudVis.gems && (
                 <div 
                   className="absolute z-30 pointer-events-none flex items-center gap-2 bg-purple-900/80 px-4 py-2 rounded-full border border-purple-500/50 backdrop-blur-md shadow-lg"
-                  style={{ top: hudSettings.gemPos?.y || 15, left: hudSettings.gemPos?.x || 50, transform: `scale(${hudSettings.hudScale})` }}
+                  style={{ top: hudSettings.gemPos?.y || 15, left: hudSettings.gemPos?.x || 50, transform: `scale(${hudSettings.hudScale})`, opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
                 >
                    <div className="w-6 h-6 bg-purple-500 rounded-full shadow-[0_0_10px_#a855f7] animate-pulse" />
                    <span className="text-white font-black italic text-2xl tracking-widest drop-shadow-md">{stats.gems || 0}</span>
                 </div>
+                )
               )}
 
               {isBoxCycling && cyclingWeapon && (
@@ -7212,9 +7372,10 @@ const App: React.FC = () => {
               )}
 
               {customGameConfig.gameMode !== 'dead_ops' && (
+                hudVis.ammo && (
                 <div 
                   className="absolute z-30 pointer-events-auto text-white text-5xl font-black italic tracking-tighter drop-shadow-2xl text-right w-48"
-                  style={{ bottom: hudSettings.ammoPos.y, right: hudSettings.ammoPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right' }}
+                  style={{ bottom: hudSettings.ammoPos.y, right: hudSettings.ammoPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
                 >
                     {isReloading ? <span className="text-blue-500 text-xl animate-pulse block">RELOADING</span> : (
                       () => {
@@ -7232,90 +7393,109 @@ const App: React.FC = () => {
                       }
                     )()}
                 </div>
+                )
               )}
               
               {isTouchDevice && customGameConfig.gameMode !== 'dead_ops' && (
+                hudVis.jump && (
                 <button 
                   onTouchStart={(e) => { e.stopPropagation(); handleJumpOrSlide(); }}
                   className="absolute z-40 pointer-events-auto w-20 h-20 bg-emerald-700/80 active:bg-emerald-500 rounded-full flex flex-col items-center justify-center border-4 border-white/40 shadow-xl active:scale-95 transition-all backdrop-blur-md"
-                  style={{ bottom: hudSettings.jumpPos.y, right: hudSettings.jumpPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right' }}
+                  style={{ bottom: hudSettings.jumpPos.y, right: hudSettings.jumpPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
                 >
                   {isSprinting ? <SlideIcon className="text-white w-8 h-8" /> : <ArrowUp className="text-white w-8 h-8" />}
                   <span className="text-[8px] font-black text-white mt-1 uppercase tracking-widest">{isSprinting ? 'Slide' : 'Jump'}</span>
                 </button>
+                )
               )}
 
               {isTouchDevice && (
+                hudVis.switchWeapon && (
                 <button 
                   onTouchStart={(e) => { e.stopPropagation(); switchWeapon(); }} 
                   disabled={!stats.secondaryWeaponName}
                   className={`absolute z-40 pointer-events-auto w-20 h-20 ${stats.secondaryWeaponName ? 'bg-indigo-700/80 active:bg-indigo-500' : 'bg-gray-800/40 opacity-50'} rounded-full flex flex-col items-center justify-center border-4 border-white/40 shadow-xl active:scale-95 transition-all backdrop-blur-md`}
-                  style={{ bottom: hudSettings.switchPos.y, right: hudSettings.switchPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right' }}
+                  style={{ bottom: hudSettings.switchPos.y, right: hudSettings.switchPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity * (stats.secondaryWeaponName ? 1 : 0.5) }}
                 >
                   <RefreshCw className="text-white w-8 h-8" />
                   <span className="text-[8px] font-black text-white mt-1 uppercase tracking-widest">Switch</span>
                 </button>
+                )
               )}
 
               {isTouchDevice && customGameConfig.gameMode !== 'dead_ops' && (
+                hudVis.knife && (
                 <button 
                   onTouchStart={(e) => { e.stopPropagation(); knifeRequest.current = true; }} 
                   onTouchEnd={(e) => { e.stopPropagation(); knifeRequest.current = false; }} 
                   className="absolute z-40 pointer-events-auto w-20 h-20 bg-orange-700/80 active:bg-orange-500 rounded-full flex items-center justify-center border-4 border-white/40 shadow-xl active:scale-95 transition-all backdrop-blur-md"
-                  style={{ bottom: hudSettings.knifePos.y, right: hudSettings.knifePos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right' }}
+                  style={{ bottom: hudSettings.knifePos.y, right: hudSettings.knifePos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
                 >
                   <Swords className="text-white w-10 h-10" />
                 </button>
+                )
               )}
 
               {isTouchDevice && (
+                hudVis.shoot && (
                 <button 
                   className={`fire-btn absolute z-40 pointer-events-auto w-28 h-28 ${customGameConfig.gameMode === 'dead_ops' ? 'hidden' : 'bg-red-700/80 active:bg-red-500'} rounded-full flex items-center justify-center border-4 border-white/40 shadow-[0_0_40px_rgba(185,28,28,0.4)] active:scale-95 transition-all backdrop-blur-md touch-none`}
-                  style={{ bottom: hudSettings.shootPos.y, right: hudSettings.shootPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right' }}
+                  style={{ bottom: hudSettings.shootPos.y, right: hudSettings.shootPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
                   onTouchStart={() => { phoneShootRequest.current = true; }}
                   onTouchEnd={() => { phoneShootRequest.current = false; }}
                 >
                   <Target className="text-white w-14 h-14 pointer-events-none" />
                 </button>
+                )
               )}
 
               {isTouchDevice && customGameConfig.gameMode === 'dead_ops' && (
+                hudVis.jump && (
                 <button 
                   onTouchStart={(e) => { e.stopPropagation(); slideRequest.current = true; setIsSprinting(true); }}
                   onTouchEnd={(e) => { e.stopPropagation(); slideRequest.current = false; setIsSprinting(false); }}
                   className="absolute z-40 pointer-events-auto w-20 h-20 bg-blue-700/80 active:bg-blue-500 rounded-full flex flex-col items-center justify-center border-4 border-white/40 shadow-xl active:scale-95 transition-all backdrop-blur-md"
-                  style={{ bottom: hudSettings.slidePos?.y || hudSettings.shootPos.y, right: hudSettings.slidePos?.x || hudSettings.shootPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right' }}
+                  style={{ bottom: hudSettings.slidePos?.y || hudSettings.shootPos.y, right: hudSettings.slidePos?.x || hudSettings.shootPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
                 >
                   <SlideIcon className="text-white w-8 h-8" />
                   <span className="text-[8px] font-black text-white mt-1 uppercase tracking-widest">Slide</span>
                 </button>
+                )
               )}
 
               {customGameConfig.gameMode !== 'dead_ops' && (
+                hudVis.reload && (
                 <button 
                   onTouchStart={(e) => { e.stopPropagation(); handleReload(); }} 
                   className="absolute z-40 pointer-events-auto w-16 h-16 bg-blue-700/80 active:bg-blue-500 rounded-full flex items-center justify-center border-4 border-white/40 shadow-xl active:scale-90 transition-all backdrop-blur-md"
-                  style={{ bottom: hudSettings.reloadPos.y, right: hudSettings.reloadPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right' }}
+                  style={{ bottom: hudSettings.reloadPos.y, right: hudSettings.reloadPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
                 >
                   <RefreshCw className="text-white w-8 h-8" />
                 </button>
+                )
               )}
             </>
           )}
 
-          {status === GameStatus.PLAYING && showCrosshair && (
+          {hudLive && (crosshair.visible || (crosshair.hitmarker && hitmarker > 0)) && (
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none">
-              <div className="w-6 h-6 relative flex items-center justify-center">
-                <div className="absolute w-[2px] h-4 bg-white/40" />
-                <div className="absolute h-[2px] w-4 bg-white/40" />
-                {hitmarker > 0 && (
-                  <div className="absolute w-8 h-8 flex items-center justify-center animate-in zoom-in duration-100">
-                    <div className="absolute w-[2px] h-4 bg-white rotate-45 translate-x-3 translate-y-3" />
-                    <div className="absolute w-[2px] h-4 bg-white -rotate-45 -translate-x-3 translate-y-3" />
-                    <div className="absolute w-[2px] h-4 bg-white rotate-45 -translate-x-3 -translate-y-3" />
-                    <div className="absolute w-[2px] h-4 bg-white -rotate-45 translate-x-3 -translate-y-3" />
-                  </div>
-                )}
+              <CrosshairView settings={crosshair} hit={hitmarker > 0} />
+            </div>
+          )}
+
+          {hudToast && (
+            <div className="absolute top-[16%] left-1/2 -translate-x-1/2 z-[65] pointer-events-none px-5 py-2 rounded-full bg-black/70 border border-white/20 backdrop-blur-md text-white text-sm font-black italic uppercase tracking-widest animate-in fade-in zoom-in duration-200">
+              {hudToast}
+            </div>
+          )}
+
+          {hudPreview && (
+            <div
+              className="absolute inset-0 z-[300] flex items-end justify-center pb-6 cursor-pointer"
+              onClick={() => { if (Date.now() - hudPreviewAt.current > 350) setHudPreview(false); }}
+            >
+              <div className="pointer-events-none bg-black/75 border border-white/30 rounded-full px-5 py-2 text-white text-xs font-black italic uppercase tracking-widest animate-pulse">
+                Previewing HUD - tap anywhere to go back
               </div>
             </div>
           )}
@@ -9609,7 +9789,7 @@ const App: React.FC = () => {
       )}
 
       {(status === GameStatus.SETTINGS || (status === GameStatus.PAUSED && showPauseSettings)) && (
-        <div className="absolute inset-0 z-[110] flex flex-col items-center bg-black/95 p-6 overflow-y-auto">
+        <div className={`absolute inset-0 z-[110] flex flex-col items-center bg-black/95 p-6 overflow-y-auto ${hudPreview ? 'invisible' : ''}`}>
           <div className="max-w-xl w-full space-y-8 animate-in slide-in-from-bottom duration-500 my-auto py-8">
             <div className="flex items-center justify-between">
               <button id="menu-item-0" onClick={() => status === GameStatus.PAUSED ? setShowPauseSettings(false) : setStatus(GameStatus.START)} className={`p-3 bg-white/5 rounded-full text-white/60 active:scale-90 transition-all border border-white/10 ${selectedMenuIndex === 0 ? 'ring-2 ring-white bg-white/20' : ''}`}><ChevronLeft size={24} /></button>
@@ -9618,40 +9798,24 @@ const App: React.FC = () => {
             </div>
             
             <div className="bg-white/5 border border-white/10 rounded-sm p-8 space-y-8">
-               <div className="flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <span className="text-white font-black italic tracking-tighter text-2xl uppercase">HUD Visibility</span>
-                    <span className="text-white/30 text-xs font-bold uppercase tracking-widest">Toggle on-screen information and controls</span>
-                  </div>
-                  <button 
-                    id="menu-item-1"
-                    onClick={() => setHudMode(prev => prev === 'all' ? 'info' : prev === 'info' ? 'hidden' : 'all')}
-                    className={`px-6 py-2 rounded-sm border-2 font-black italic uppercase transition-all ${
-                      hudMode === 'all' ? 'bg-emerald-600 border-emerald-400 text-white' : 
-                      hudMode === 'info' ? 'bg-blue-600 border-blue-400 text-white' : 
-                      'bg-gray-800 border-gray-600 text-white/50'
-                    } ${selectedMenuIndex === 1 ? 'ring-4 ring-white scale-110' : ''}`}
-                  >
-                    {hudMode === 'all' ? 'ALL' : hudMode === 'info' ? 'INFO ONLY' : 'HIDDEN'}
-                  </button>
-               </div>
+               <HudVisibilityPanel
+                 value={hudView}
+                 onChange={applyHudPatch}
+                 onReset={resetHudVisibility}
+                 onCyclePreset={cycleHudPreset}
+                 onPreview={status === GameStatus.PAUSED && showPauseSettings ? startHudPreview : undefined}
+                 touchDevice={isTouchDevice}
+                 rowId="menu-item-1"
+                 rowSelected={selectedMenuIndex === 1}
+               />
 
-               <div className="flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <span className="text-white font-black italic tracking-tighter text-2xl uppercase">Crosshair</span>
-                    <span className="text-white/30 text-xs font-bold uppercase tracking-widest">Toggle crosshair visibility</span>
-                  </div>
-                  <button 
-                    id="menu-item-2"
-                    onClick={() => setShowCrosshair(!showCrosshair)}
-                    className={`px-6 py-2 rounded-sm border-2 font-black italic uppercase transition-all ${
-                      showCrosshair ? 'bg-emerald-600 border-emerald-400 text-white' : 
-                      'bg-red-600 border-red-400 text-white/50'
-                    } ${selectedMenuIndex === 2 ? 'ring-4 ring-white scale-110' : ''}`}
-                  >
-                    {showCrosshair ? 'VISIBLE' : 'HIDDEN'}
-                  </button>
-               </div>
+               <CrosshairPanel
+                 value={crosshair}
+                 onChange={(patch) => setCrosshair(prev => sanitizeCrosshair({ ...prev, ...patch }))}
+                 onReset={() => setCrosshair(sanitizeCrosshair(null))}
+                 rowId="menu-item-2"
+                 rowSelected={selectedMenuIndex === 2}
+               />
 
                {(stats.activeMapId === 't_dogs_land' && bossDefeated) && (
                   <div className="flex items-center justify-between py-4">
@@ -9753,7 +9917,7 @@ const App: React.FC = () => {
                       <button 
                         onClick={() => {
                           if (newHudProfileName.trim()) {
-                            setSavedHudProfiles(prev => [...prev.filter(p => p.name !== newHudProfileName.trim()), { name: newHudProfileName.trim(), settings: hudSettings }]);
+                            setSavedHudProfiles(prev => [...prev.filter(p => p.name !== newHudProfileName.trim()), { name: newHudProfileName.trim(), settings: hudSettings, visibility: hudVis, crosshair }]);
                             setNewHudProfileName('');
                           }
                         }}
@@ -9768,7 +9932,11 @@ const App: React.FC = () => {
                         {savedHudProfiles.map((profile, idx) => (
                           <div key={idx} className="flex group">
                             <button 
-                              onClick={() => setHudSettings(profile.settings)}
+                              onClick={() => {
+                                setHudSettings(profile.settings);
+                                if (profile.visibility) setHudVis(sanitizeHudVisibility(profile.visibility));
+                                if (profile.crosshair) setCrosshair(sanitizeCrosshair(profile.crosshair));
+                              }}
                               className="flex-1 bg-white/5 hover:bg-white/10 border border-white/10 p-3 rounded-l-sm text-left truncate font-bold text-sm text-white/80 transition-colors"
                             >
                               {profile.name}

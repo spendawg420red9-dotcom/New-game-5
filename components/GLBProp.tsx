@@ -28,6 +28,40 @@ const getEnv = (gl: THREE.WebGLRenderer) => {
   return sharedEnv;
 };
 
+// Rebuilds a geometry with plain Float32 attributes (positions, normals, UVs...).
+//
+// The vertex-animation rigs (CustomModelZombie in Scene.tsx, PosedGLBBody below) edit vertex positions in place,
+// which only works on ordinary BufferAttributes. Optimized GLBs (glTF-Transform, gltfpack, meshopt/quantized
+// exports...) usually store vertices *interleaved* (position + normal + uv packed together) or as 16-bit ints:
+// an interleaved attribute has no setUsage(), and its .array mixes positions, normals and UVs, so the rig crashed
+// and the game showed the green placeholder body instead of the model (that was the R9S Biohazard boss).
+// Reading through getX/getY/getZ handles every layout, so the rigs always get clean data.
+const plainGeometryCache = new WeakMap<THREE.BufferGeometry, THREE.BufferGeometry>();
+export const toPlainGeometry = (src: THREE.BufferGeometry): THREE.BufferGeometry => {
+  let plain = plainGeometryCache.get(src);
+  if (!plain) {
+    plain = new THREE.BufferGeometry();
+    for (const name of Object.keys(src.attributes)) {
+      if (name === 'skinIndex' || name === 'skinWeight') continue; // skinning data is not used by these rigs
+      const a = src.attributes[name] as THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
+      const size = a.itemSize;
+      const arr = new Float32Array(a.count * size);
+      for (let i = 0; i < a.count; i++) {
+        const o = i * size;
+        arr[o] = a.getX(i);
+        if (size > 1) arr[o + 1] = a.getY(i);
+        if (size > 2) arr[o + 2] = a.getZ(i);
+        if (size > 3) arr[o + 3] = a.getW(i);
+      }
+      plain.setAttribute(name, new THREE.BufferAttribute(arr, size));
+    }
+    if (src.index) plain.setIndex(src.index.clone());
+    plainGeometryCache.set(src, plain);
+  }
+  // Every rig deforms its own copy, so hand out a clone and keep the cached one untouched.
+  return plain.clone();
+};
+
 // Draws a GLB scaled to `size`.
 //  mode 'stretch': fills size [w,h,d] exactly (matches collision boxes)
 //  mode 'height' : uniform scale so the model is size[1] tall
@@ -210,7 +244,7 @@ const PosedGLBBody: React.FC<{ url: string; height: number; renderWeapon?: () =>
     if (!target) return null;
     const src = target as THREE.Mesh;
     posed.current = false;
-    const geo = src.geometry.clone();
+    const geo = toPlainGeometry(src.geometry);
     geo.applyMatrix4(src.matrixWorld);
     geo.computeBoundingBox();
     const bb = geo.boundingBox!;

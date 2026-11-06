@@ -2,7 +2,7 @@
 import React, { useRef, useState, useEffect, useMemo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Sky, Stars, Plane, Box, Sphere, Cylinder, Cone, Grid, Float, useTexture, Sparkles, Text, Torus, Html, Instances, Instance, useGLTF } from '@react-three/drei';
-import { GLBProp, GLBBoundary, PlayerAvatar, getSharedEnv } from './GLBProp';
+import { GLBProp, GLBBoundary, PlayerAvatar, getSharedEnv, toPlainGeometry } from './GLBProp';
 import { resolveModelUrl } from '../userModels';
 import { MODEL_DEFAULTS } from '../modelDefaults';
 import { User, Skull, Shield, Zap, Swords } from 'lucide-react';
@@ -1974,6 +1974,14 @@ export const Scene: React.FC<SceneProps> = ({
   bossDefeated, isPlayOfTheGame, shotCrows
 }) => {
   const { camera, scene, clock, gl } = useThree();
+
+  // Start downloading custom zombie models (R9S Biohazard boss, Pickle...) as soon as the map is known, so the
+  // zombies aren't green placeholder blocks while a few MB of model comes down at the start of a game.
+  useEffect(() => {
+    mapConfig?.customZombies?.forEach(cz => {
+      if (cz.modelUrl && !cz.modelUrl.startsWith('user:')) useGLTF.preload(cz.modelUrl);
+    });
+  }, [mapConfig?.customZombies]);
 
   const isMultiplayer = gameMode === 'multiplayer' || gameMode === 'multiplayer_ffa' || gameMode === 'multiplayer_tdm' || gameMode === 'gun_game' || gameMode === 'hard_point' || gameMode?.startsWith('multiplayer');
 
@@ -7579,7 +7587,8 @@ const CustomModelZombie: React.FC<{ url: string; scale?: number; hitFlash: numbe
     if (!target) return null;
     const src = target as THREE.Mesh;
 
-    const geo = src.geometry.clone();
+    // Plain Float32 copy: optimized GLBs (like the R9S Biohazard boss) store vertices interleaved, which this rig can't edit.
+    const geo = toPlainGeometry(src.geometry);
     geo.applyMatrix4(src.matrixWorld);
     geo.computeBoundingBox();
     const bb = geo.boundingBox!;
