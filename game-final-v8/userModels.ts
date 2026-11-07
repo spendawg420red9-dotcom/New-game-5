@@ -19,7 +19,9 @@ export interface UserModel { id: string; name: string; size: [number, number, nu
 const DB = 'ztown_user_models';
 const STORE = 'models';
 const FOLDER_KEY = 'ztown_user_model_folders_v1';
-const MAX_FILE_BYTES = 80 * 1024 * 1024;
+// Big Meshy exports (130 MB and up) are fine: files are only measured from their small header and stored as-is.
+// This is just a safety ceiling so a wrong file (a video, an archive) is not copied into storage.
+const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 
 export const UNSORTED = 'Unsorted';
 export const DEFAULT_MODEL_FOLDERS = ['Perks', 'Buildings', 'People', 'Props'];

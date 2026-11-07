@@ -3,11 +3,12 @@ import React, { useRef, useState, useEffect, useMemo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Sky, Stars, Plane, Box, Sphere, Cylinder, Cone, Grid, Float, useTexture, Sparkles, Text, Torus, Html, Instances, Instance, useGLTF } from '@react-three/drei';
 import { GLBProp, GLBBoundary, PlayerAvatar, getSharedEnv, toPlainGeometry, shrinkSceneTextures } from './GLBProp';
-import { machineBaseHeight } from '../customMapUtils';
+import { machineBaseHeight, canonicalPerkId } from '../customMapUtils';
 import { resolveModelUrl } from '../userModels';
 import { MODEL_DEFAULTS } from '../modelDefaults';
 import { User, Skull, Shield, Zap, Swords } from 'lucide-react';
 import * as THREE from 'three';
+import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { GameStatus, PowerUpType, MapConfig, WeaponCamo, PlayerScore, WeaponAttachment, Progression, ZombieType, GameSettings, HUDSettings, ZombieData, MultiplayerMode, GameMode } from '../types';
 import { soundService } from '../services/soundService';
 
@@ -2526,6 +2527,16 @@ export const Scene: React.FC<SceneProps> = ({
   // Story Mode Objectives
   const [objectivesCompleted, setObjectivesCompleted] = useState(false);
   const [currentObjective, setCurrentObjective] = useState<string>('');
+
+  // Skins from the map builder ("Swap zombie / boss skin"): one model per zombie type, keeping that type's behaviour.
+  const zombieSkinConfigs = useMemo(() => {
+    const out: Record<string, any> = {};
+    Object.entries(mapConfig?.zombieSkins || {}).forEach(([kind, sk]) => {
+      if (!sk || !sk.modelUrl) return;
+      out[kind] = { id: `skin_${kind}`, name: sk.name || kind, skinColor: '#4d7c0f', headColor: '#4d7c0f', eyeColor: '#ff0000', speedMultiplier: 1, hpMultiplier: 1, hat: 'none', modelUrl: sk.modelUrl, modelScale: sk.modelScale ?? 1 };
+    });
+    return out;
+  }, [mapConfig?.zombieSkins]);
 
   const interactables = useMemo(() => {
     const items = mapConfig.interactables.map(i => ({
@@ -5371,7 +5382,7 @@ export const Scene: React.FC<SceneProps> = ({
       if (fireSaleActive && near.id === 'box') {
         cost = 10;
       }
-      onInteractAvailable({ type: near.type, cost, id: near.id });
+      onInteractAvailable({ type: near.type, cost, id: canonicalPerkId(near) });
       interactableFound = true;
     }
 
@@ -5832,9 +5843,6 @@ export const Scene: React.FC<SceneProps> = ({
                   <GLBProp url={item.modelUrl} size={[0, 3.2 * ms, 0]} mode="height" anchor="base" />
                 </Suspense>
               </GLBBoundary>
-              <Text position={[0, 3.6 * ms, 0]} fontSize={0.3} color="#ffffff" outlineWidth={0.03} outlineColor="#000000">
-                {item.type.replace('PERK: ', '')}
-              </Text>
               <pointLight position={[0, 2, 1.5]} intensity={6} color={item.color || '#ff3333'} distance={8} />
             </group>
           );
@@ -5878,16 +5886,28 @@ export const Scene: React.FC<SceneProps> = ({
       {zombieRefs.current.map(z => (
         <ZombieInstance key={z.id} position={z.position} variant={z.variant} hitFlash={z.hitFlash} playerPosRef={playerPos} paused={status === GameStatus.PAUSED} isStunned={z.stunTimer > 0} type={z.type} customZombieConfig={(() => {
           const list = mapConfig?.customZombies;
-          if (!list || list.length === 0) return undefined;
-          if (z.customId) return list.find(c => c.id === z.customId);
-          // Old maps (no mix): every zombie uses the first custom zombie
-          if (!mapConfig?.zombieMix || mapConfig.zombieMix.length === 0) return list[0];
-          return undefined;
+          let cfg: any;
+          if (list && list.length > 0) {
+            if (z.customId) cfg = list.find(c => c.id === z.customId);
+            // Old maps (no mix): every zombie uses the first custom zombie
+            else if (!mapConfig?.zombieMix || mapConfig.zombieMix.length === 0) cfg = list[0];
+          }
+          // A custom zombie you made wins; otherwise this zombie type wears its skin (if you gave it one)
+          return cfg || zombieSkinConfigs[z.type];
         })()} />
       ))}
       {dragonActive && (
         <group ref={dragonGroupRef} position={dragonPos.current} rotation={[0, dragonRotY.current, 0]}>
-          {bossType === 'dragon' && (
+          {mapConfig?.zombieSkins?.[bossType]?.modelUrl && (
+            <group position={[0, bossType === 'dragon' ? -(BOSS_SKIN_HEIGHT.dragon * (mapConfig.zombieSkins[bossType].modelScale ?? 1)) / 2 : 0, 0]}>
+              <GLBBoundary fallback={null}>
+                <Suspense fallback={null}>
+                  <ModelBody url={mapConfig.zombieSkins[bossType].modelUrl} scale={(BOSS_SKIN_HEIGHT[bossType] || 8) / 2 * (mapConfig.zombieSkins[bossType].modelScale ?? 1)} hitFlash={0} />
+                </Suspense>
+              </GLBBoundary>
+            </group>
+          )}
+          {bossType === 'dragon' && !mapConfig?.zombieSkins?.dragon?.modelUrl && (
             <>
               {/* Boss Annotation */}
               {gameMode === 'story' && (
@@ -6009,7 +6029,7 @@ export const Scene: React.FC<SceneProps> = ({
             </>
           )}
 
-          {bossType === 'elephant' && (
+          {bossType === 'elephant' && !mapConfig?.zombieSkins?.elephant?.modelUrl && (
             <group scale={1.5}>
               {/* Boss Annotation */}
               {gameMode === 'story' && (
@@ -6098,7 +6118,7 @@ export const Scene: React.FC<SceneProps> = ({
             </group>
           )}
 
-          {bossType === 'ogre' && (
+          {bossType === 'ogre' && !mapConfig?.zombieSkins?.ogre?.modelUrl && (
             <group scale={2}>
               {/* Boss Annotation */}
               {gameMode === 'story' && (
@@ -6202,7 +6222,7 @@ export const Scene: React.FC<SceneProps> = ({
             </group>
           )}
 
-          {bossType === 'worm' && (
+          {bossType === 'worm' && !mapConfig?.zombieSkins?.worm?.modelUrl && (
             <group>
               {/* Boss Annotation */}
               {gameMode === 'story' && (
@@ -6283,7 +6303,7 @@ export const Scene: React.FC<SceneProps> = ({
             </group>
           )}
 
-          {bossType === 'mushroom_keeper' && (
+          {bossType === 'mushroom_keeper' && !mapConfig?.zombieSkins?.mushroom_keeper?.modelUrl && (
             <group>
               {gameMode === 'story' && (
               <Html position={[0, 8, 0]} center distanceFactor={15}>
@@ -7765,6 +7785,108 @@ const CustomModelZombie: React.FC<{ url: string; scale?: number; hitFlash: numbe
   );
 };
 
+// Height (world units) a boss skin is scaled to at x1. The skin picker's size option multiplies this.
+const BOSS_SKIN_HEIGHT: Record<string, number> = { dragon: 12, elephant: 9, ogre: 9, worm: 14, mushroom_keeper: 7 };
+
+// Models that come with their own skeleton and animation clips (walk, idle, attack...) play those clips:
+// walking while the zombie moves, idle when it stands still. Models without clips use the shape-based rig above.
+const ClipModelBody: React.FC<{ url: string; scale?: number; hitFlash: number }> = ({ url, scale = 1, hitFlash }) => {
+  const { scene, animations } = useGLTF(resolveModelUrl(url)) as any;
+  shrinkSceneTextures(scene);
+  const { gl } = useThree();
+  const root = useRef<THREE.Group>(null);
+  const tmp = useMemo(() => new THREE.Vector3(), []);
+  const lastPos = useRef(new THREE.Vector3());
+  const speed = useRef(0);
+  const tick = useRef(0);
+  const pending = useRef(0);
+  const current = useRef<THREE.AnimationAction | null>(null);
+
+  const built = useMemo(() => {
+    const clone: THREE.Object3D = cloneSkinned(scene);
+    clone.updateWorldMatrix(true, true);
+    const box = new THREE.Box3().setFromObject(clone);
+    const H = Math.max(box.max.y - box.min.y, 1e-4);
+    const c = box.getCenter(new THREE.Vector3());
+    const wrap = new THREE.Group();
+    clone.position.set(-c.x, -box.min.y, -c.z);
+    wrap.add(clone);
+    wrap.scale.setScalar(2 / H); // every model ends up 2 units tall, feet on the ground (same as the shape rig)
+    const mats: any[] = [];
+    clone.traverse((o: any) => {
+      if (!o.isMesh) return;
+      o.frustumCulled = false;
+      o.castShadow = true; o.receiveShadow = true;
+      const list = Array.isArray(o.material) ? o.material : [o.material];
+      const own = list.map((m: any) => {
+        const cm = m.clone();
+        cm.side = THREE.DoubleSide;
+        if (cm.isMeshStandardMaterial) {
+          cm.envMap = getSharedEnv(gl); cm.envMapIntensity = 0.8;
+          cm.metalness = Math.min(cm.metalness ?? 0, 0.5);
+          cm.roughness = Math.max(cm.roughness ?? 1, 0.45);
+          if (cm.map) cm.map.colorSpace = THREE.SRGBColorSpace;
+        }
+        mats.push(cm);
+        return cm;
+      });
+      o.material = Array.isArray(o.material) ? own : own[0];
+    });
+    const mixer = new THREE.AnimationMixer(clone);
+    const find = (re: RegExp) => (animations as THREE.AnimationClip[]).find(a => re.test(a.name));
+    const walkClip = find(/walk|run|move|shamble|crawl|stride/i) || animations[0];
+    const idleClip = find(/idle|stand|breath|wait/i);
+    return { wrap, mixer, mats, walk: mixer.clipAction(walkClip), idle: idleClip && idleClip !== walkClip ? mixer.clipAction(idleClip) : null };
+  }, [scene, animations, gl]);
+
+  useEffect(() => () => { built.mixer.stopAllAction(); }, [built]);
+  useEffect(() => {
+    built.mats.forEach((m: any) => { if (m.emissive) { m.emissive.set(hitFlash > 0 ? '#ff0000' : '#000000'); m.emissiveIntensity = hitFlash > 0 ? 0.9 : 0; } });
+  }, [built, hitFlash]);
+
+  const failed = useRef(false);
+  useFrame((state, delta) => {
+    if (failed.current || !root.current) return;
+    try {
+      root.current.getWorldPosition(tmp);
+      const moved = tmp.distanceTo(lastPos.current) / Math.max(delta, 0.001);
+      lastPos.current.copy(tmp);
+      speed.current += (Math.min(moved, 14) - speed.current) * Math.min(1, delta * 6);
+      const moving = speed.current > 0.4;
+      const target = moving ? built.walk : (built.idle || built.walk);
+      if (target !== current.current) {
+        current.current?.fadeOut(0.25);
+        target.reset().fadeIn(0.25).play();
+        current.current = target;
+      }
+      if (target === built.walk) built.walk.timeScale = moving ? Math.min(2.2, 0.7 + speed.current * 0.22) : 0.15;
+      // Far-away zombies animate less often (keeps big hordes smooth on phones)
+      pending.current += delta;
+      tick.current++;
+      if (state.camera.position.distanceTo(tmp) > 55 && tick.current % 6 !== 0) return;
+      built.mixer.update(pending.current);
+      pending.current = 0;
+    } catch (e) { failed.current = true; console.warn('Model animation disabled', e); }
+  });
+
+  return (
+    <group ref={root} scale={[scale, scale, scale]}>
+      <primitive object={built.wrap} />
+    </group>
+  );
+};
+
+// Picks the right body for a .glb: its own animation clips when it has a skeleton + clips, otherwise the shape-based rig.
+const ModelBody: React.FC<{ url: string; scale?: number; hitFlash: number }> = (props) => {
+  const { scene, animations } = useGLTF(resolveModelUrl(props.url)) as any;
+  const hasClips = useMemo(() => {
+    let skinned = false;
+    scene.traverse((o: any) => { if (o.isSkinnedMesh) skinned = true; });
+    return skinned && Array.isArray(animations) && animations.length > 0;
+  }, [scene, animations]);
+  return hasClips ? <ClipModelBody {...props} /> : <CustomModelZombie {...props} />;
+};
+
 // Simple body shown while a custom zombie model loads, or if it fails to load (so the game never crashes).
 const ZombieFallbackBody: React.FC<{ color: string; hitFlash: number }> = ({ color, hitFlash }) => (
   <group>
@@ -7885,7 +8007,7 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
       {customZombieConfig?.modelUrl ? (
         <GLBBoundary fallback={<ZombieFallbackBody color={customZombieConfig.skinColor || '#4d7c0f'} hitFlash={hitFlash} />}>
           <Suspense fallback={<ZombieFallbackBody color={customZombieConfig.skinColor || '#4d7c0f'} hitFlash={hitFlash} />}>
-            <CustomModelZombie url={customZombieConfig.modelUrl} scale={customZombieConfig.modelScale ?? 1} hitFlash={hitFlash} />
+            <ModelBody url={customZombieConfig.modelUrl} scale={customZombieConfig.modelScale ?? 1} hitFlash={hitFlash} />
           </Suspense>
         </GLBBoundary>
       ) : (<>

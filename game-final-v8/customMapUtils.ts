@@ -55,6 +55,17 @@ export const BUILTIN_ZOMBIE_KINDS: { id: string; name: string }[] = [
   { id: 'brute', name: 'Brute' },
 ];
 
+// Zombie and boss types that can wear a .glb skin from My Models (MapConfig.zombieSkins).
+export const SKIN_KINDS: { id: string; name: string; group: 'Zombies' | 'Bosses' }[] = [
+  ...BUILTIN_ZOMBIE_KINDS.map(k => ({ id: k.id, name: k.name.replace(' (flyer)', ''), group: 'Zombies' as const })),
+  { id: 'dragon', name: 'Dragon Boss', group: 'Bosses' },
+  { id: 'elephant', name: 'Elephant Boss', group: 'Bosses' },
+  { id: 'ogre', name: 'Ogre Boss', group: 'Bosses' },
+  { id: 'worm', name: 'Worm Boss', group: 'Bosses' },
+  { id: 'mushroom_keeper', name: 'Mushroom Keeper Boss', group: 'Bosses' },
+];
+export const BOSS_SKIN_KINDS = SKIN_KINDS.filter(k => k.group === 'Bosses').map(k => k.id);
+
 export interface AssetCategory {
   id: string;
   name: string;
@@ -631,6 +642,17 @@ export const ASSET_CATALOG: AssetDefinition[] = [
     interactableType: 'PERK: Chaos Burst',
     cost: 3000,
     color: '#ec4899',
+  },
+  {
+    id: 'vulture',
+    name: 'Loot Vision (Vulture Aid)',
+    category: 'perks',
+    icon: '👁️',
+    description: 'Zombies drop points & ammo. See loot through walls',
+    type: 'perk',
+    interactableType: 'PERK: Loot Vision',
+    cost: 3000,
+    color: '#84cc16',
   },
 
   // --- SPECIAL STATIONS & OBJECTIVES ---
@@ -1263,6 +1285,19 @@ export const PLAYER_AVATARS: PlayerAvatarOption[] = [
   { id: 'biohazard_armor', name: 'Biohazard Armor', group: 'R9S' },
 ];
 
+// "My Designs" shows exactly these 8 (in this order), plus anything the player makes themselves with the Design Studio.
+// The Juggernog machine lives in Perk Machines, and the old sample designs no longer show here.
+const MY_DESIGN_IDS = [
+  'r9s_skatepark_floor', 'custom_zombie_pickle', 'r9s_warehouse_shell', 'r9s_chamber_wall',
+  'r9s_chamber_plain_wall', 'r9s_chainlink_fence', 'r9s_skull_gate', 'custom_zombie_biohazard',
+];
+const HIDDEN_DESIGN_IDS = ['r9s_perk_juggernog', 'custom_obj_lava_pillar', 'custom_obj_cyber_barrier', 'custom_obj_gold_vault'];
+export const filterMyDesigns = (list: AssetDefinition[]): AssetDefinition[] => {
+  const picked = MY_DESIGN_IDS.map(id => list.find(a => a.id === id)).filter((a): a is AssetDefinition => !!a);
+  const own = list.filter(a => !MY_DESIGN_IDS.includes(a.id) && !HIDDEN_DESIGN_IDS.includes(a.id) && !BUILTIN_CUSTOM_DESIGNS.some(b => b.id === a.id));
+  return [...picked, ...own];
+};
+
 export const loadUserCustomObjects = (): AssetDefinition[] => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_CUSTOM_OBJECTS);
@@ -1712,6 +1747,14 @@ export const machineBaseHeight = (it: { id: string; type: string }): number =>
   it.id === 'box' || it.type.includes('Gun Box') ? 1.4
     : it.id === 'healthRefill' || it.type.includes('Health Refill') ? 2.2
     : 3.2;
+
+/** The perk id the game uses ('jugg', 'vulture'...) for a perk machine. Machines placed in the builder have ids like
+ *  'jugg_k3x9', so the id is worked out from the machine type ('PERK: Toughness Brew') and the perk really works. */
+export const canonicalPerkId = (it: { id: string; type: string }): string => {
+  if (!it.type || !it.type.startsWith('PERK:')) return it.id;
+  const a = ASSET_CATALOG.find(c => c.type === 'perk' && !c.modelUrl && c.interactableType === it.type);
+  return a ? a.id : it.id;
+};
 
 /** The catalog entry (MACHINE_KINDS id) a machine currently is, or '' if it is something else. */
 export const machineKindOf = (it: { type: string }): string =>

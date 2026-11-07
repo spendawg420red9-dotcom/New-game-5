@@ -30,12 +30,9 @@ const getEnv = (gl: THREE.WebGLRenderer) => {
 
 // Big textures are what actually fill up a phone's memory: one 4096x4096 texture is about 90 MB on the GPU, and
 // a Meshy model has three of them. Every GLB is shrunk once, right after it loads (before it is first drawn), so
-// a map with lots of different models no longer crashes the page. Phones get 1024, computers 2048.
+// a map with lots of different models no longer crashes the page. Every device (phones included) keeps textures up to 2048.
 const shrunkScenes = new WeakSet<object>();
-const maxTextureSize = () => {
-  const touch = typeof window !== 'undefined' && ('ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0);
-  return touch ? 1024 : 2048;
-};
+const maxTextureSize = () => 2048;
 const TEXTURE_SLOTS = ['map', 'normalMap', 'metalnessMap', 'roughnessMap', 'aoMap', 'emissiveMap', 'bumpMap', 'alphaMap', 'lightMap', 'displacementMap'];
 export const shrinkSceneTextures = (scene: THREE.Object3D) => {
   if (!scene || shrunkScenes.has(scene)) return;

@@ -22,7 +22,8 @@ import {
   loadUserCustomObjects, saveUserCustomObject, deleteUserCustomObject,
   saveLocalCommunityMap, floorObject, floorMapObjects, BUILTIN_ZOMBIE_KINDS, MODEL_ZOMBIE_PRESETS,
   MACHINE_KINDS, MachineEditResult, isSkinnableMachine, machineBaseHeight, machineKindOf,
-  objectToMachine, machineToObject, changeMachineKind, createBlankCustomMap, duplicateCustomMap, setActiveCustomMapId
+  objectToMachine, machineToObject, changeMachineKind, createBlankCustomMap, duplicateCustomMap, setActiveCustomMapId,
+  filterMyDesigns, SKIN_KINDS
 } from '../customMapUtils';
 
 interface MapBuilderModalProps {
@@ -841,6 +842,26 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
   const [pickedModels, setPickedModels] = useState<string[]>([]);
   const [newFolderName, setNewFolderName] = useState('');
 
+  // ---- Zombie / boss skins: any zombie or boss type can wear one of your models (it keeps its own behaviour) ----
+  const [skinKind, setSkinKind] = useState<string>('normal');
+  const [skinModel, setSkinModel] = useState<string>('');
+  const [skinScale, setSkinScale] = useState<number>(1);
+  const applyZombieSkin = () => {
+    if (!skinModel) { showToast('Pick one of your models first'); return; }
+    const kind = SKIN_KINDS.find(k => k.id === skinKind);
+    const modelName = lookGroups.flatMap(g => g.items).find(i => i.url === skinModel)?.name;
+    pushHistory({ ...currentMap, zombieSkins: { ...(currentMap.zombieSkins || {}), [skinKind]: { modelUrl: skinModel, modelScale: skinScale, name: modelName } } });
+    const mix = currentMap.zombieMix;
+    const notInMix = kind?.group === 'Zombies' && mix && mix.length > 0 && !mix.some(m => m.kind === skinKind);
+    showToast(`${kind?.name || skinKind} now uses ${modelName || 'your model'}${notInMix ? ' - add it to the Zombie mix in Map Settings so it spawns' : ''}`);
+  };
+  const clearZombieSkin = (kind: string) => {
+    const next = { ...(currentMap.zombieSkins || {}) };
+    delete next[kind];
+    pushHistory({ ...currentMap, zombieSkins: next });
+    showToast(`${SKIN_KINDS.find(k => k.id === kind)?.name || kind} back to its normal look`);
+  };
+
   // Adds every .glb in the list, one after another (safe for phones). Returns the models that can now be used,
   // including ones that were already in My Models.
   const uploadModelFiles = async (files: File[], folder?: string): Promise<UserModel[]> => {
@@ -932,7 +953,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
   const filteredAssets = useMemo(() => {
     let list = combinedCatalog;
     if (selectedCategory === 'custom') {
-      list = userCustomObjects;
+      list = filterMyDesigns(userCustomObjects);
     } else if (selectedCategory === 'mymodels') {
       list = myModelAssets;
       if (modelFolder !== 'All') list = list.filter(a => a.folder === modelFolder);
@@ -2302,6 +2323,43 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
               <p className="text-[10px] text-white/50 leading-snug">
                 Each model becomes a placeable prop and a zombie. To make one a perk machine or Pack-a-Punch: place it, tap it, then pick "Make it a…" in the bar at the bottom. Models stay saved on this device.
               </p>
+
+              <div className="rounded-xl border border-fuchsia-500/30 bg-fuchsia-950/20 p-2.5 flex flex-col gap-2">
+                <div className="text-[10px] font-black uppercase tracking-wider text-fuchsia-300">Swap zombie / boss skin</div>
+                <div className="flex gap-1.5">
+                  <select value={skinKind} onChange={(e) => setSkinKind(e.target.value)} className="flex-1 min-w-0 bg-zinc-800 border border-white/20 text-white text-xs font-bold rounded-lg px-2 py-2">
+                    {(['Zombies', 'Bosses'] as const).map(g => (
+                      <optgroup key={g} label={g}>
+                        {SKIN_KINDS.filter(k => k.group === g).map(k => <option key={k.id} value={k.id}>{k.name}{currentMap.zombieSkins?.[k.id] ? ' ✓' : ''}</option>)}
+                      </optgroup>
+                    ))}
+                  </select>
+                  <select value={skinScale} onChange={(e) => setSkinScale(parseFloat(e.target.value))} className="w-[72px] bg-zinc-800 border border-white/20 text-white text-xs font-bold rounded-lg px-1.5 py-2" title="Size">
+                    {[0.6, 0.8, 1, 1.25, 1.5, 2].map(v => <option key={v} value={v}>x{v}</option>)}
+                  </select>
+                </div>
+                <select value={skinModel} onChange={(e) => setSkinModel(e.target.value)} className="w-full bg-zinc-800 border border-white/20 text-white text-xs font-bold rounded-lg px-2 py-2">
+                  <option value="">Pick a model…</option>
+                  {lookGroups.map(g => (
+                    <optgroup key={g.label} label={g.label}>
+                      {g.items.map(o => <option key={o.url} value={o.url}>{o.name}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+                <button onClick={applyZombieSkin} className="w-full py-2 bg-fuchsia-600 hover:bg-fuchsia-500 text-white text-xs font-black uppercase tracking-wider rounded-lg active:scale-95 transition-all">Apply skin</button>
+                {Object.entries(currentMap.zombieSkins || {}).length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    {Object.entries(currentMap.zombieSkins || {}).map(([kind, sk]) => (
+                      <div key={kind} className="flex items-center gap-2 text-[11px] text-white/80 bg-black/30 rounded-lg px-2 py-1">
+                        <span className="font-black text-fuchsia-300 shrink-0">{SKIN_KINDS.find(k => k.id === kind)?.name || kind}</span>
+                        <span className="truncate flex-1">{sk.name || 'model'}{sk.modelScale && sk.modelScale !== 1 ? ` x${sk.modelScale}` : ''}</span>
+                        <button onClick={() => clearZombieSkin(kind)} className="px-1.5 py-0.5 bg-red-900/60 hover:bg-red-800 text-red-200 rounded font-black">Reset</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[10px] text-white/50 leading-snug">The type keeps its speed, health and moves - only the body changes, and it walks and swings its arms (or plays the model's own animations).</p>
+              </div>
             </div>
           )}
 

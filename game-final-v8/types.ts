@@ -214,6 +214,12 @@ export interface CustomZombieConfig {
   modelScale?: number;
 }
 
+export interface ZombieSkin {
+  modelUrl: string;      // '/assets/...' or 'user:<id>' (a .glb from My Models)
+  modelScale?: number;   // 1 = default size for that type
+  name?: string;
+}
+
 export interface ZombieMixEntry {
   kind: string;
   weight: number;
@@ -303,6 +309,9 @@ export interface MapConfig {
   // or the id of a custom zombie (customZombies[].id). weight = share of spawns (any positive numbers).
   // One entry = only that zombie. Empty/missing = default round-based spawning (old maps keep working).
   zombieMix?: ZombieMixEntry[];
+  // New skins for the built-in zombie types and bosses, keyed by type ('normal','runner','tank','inferno','parasite','crawler',
+  // 'brute','dragon','elephant','ogre','worm','mushroom_keeper'). The type keeps its behaviour, speed and health - only the body changes.
+  zombieSkins?: Record<string, ZombieSkin>;
   // 0.2 (very dark) .. 3 (very bright). 1 = normal.
   brightness?: number;
   // Keep objects resting on the floor automatically (default on).
