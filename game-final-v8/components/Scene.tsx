@@ -3,7 +3,7 @@ import React, { useRef, useState, useEffect, useMemo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Sky, Stars, Plane, Box, Sphere, Cylinder, Cone, Grid, Float, useTexture, Sparkles, Text, Torus, Html, Instances, Instance, useGLTF } from '@react-three/drei';
 import { GLBProp, GLBBoundary, PlayerAvatar, getSharedEnv, toPlainGeometry, shrinkSceneTextures } from './GLBProp';
-import { machineBaseHeight, canonicalPerkId } from '../customMapUtils';
+import { machineBaseHeight, canonicalPerkId, isBuilderMap } from '../customMapUtils';
 import { resolveModelUrl } from '../userModels';
 import { MODEL_DEFAULTS } from '../modelDefaults';
 import { User, Skull, Shield, Zap, Swords } from 'lucide-react';
@@ -2331,18 +2331,22 @@ export const Scene: React.FC<SceneProps> = ({
   const projectiles = useRef<Projectile[]>([]);
   const effects = useRef<Effect[]>([]);
   
+  // Maps made in the builder: the gravestone is an item the player places (and can re-skin with a .glb).
+  const builderGrave = useMemo(() => (isBuilderMap(mapConfig.id) ? mapConfig.interactables.find(i => i.id === 'gravestone') || null : null), [mapConfig]);
   const currentGravePos = useMemo(() => {
+    if (isBuilderMap(mapConfig.id)) return builderGrave ? new THREE.Vector3(builderGrave.pos[0], 0, builderGrave.pos[2]) : new THREE.Vector3(0, -500, 0);
     if (mapConfig.id === 'bunker') return new THREE.Vector3(-59.1, 0, 0);
     if (mapConfig.id === 'mukkatown') return new THREE.Vector3(-40, 0, 10);
     if (mapConfig.id === 'king_robbos_farm') return new THREE.Vector3(-20, 0, 10);
     return new THREE.Vector3(115, 0, 0);
-  }, [mapConfig.id]);
+  }, [mapConfig.id, builderGrave]);
 
   const currentGraveRot = useMemo(() => {
+    if (builderGrave) return [0, builderGrave.rotation?.[1] || 0, 0] as [number, number, number];
     if (mapConfig.id === 'bunker') return [0, Math.PI / 2, 0] as [number, number, number];
     if (mapConfig.id === 'mukkatown') return [0, -Math.PI / 2, 0] as [number, number, number];
     return [0, -Math.PI / 2, 0] as [number, number, number];
-  }, [mapConfig.id]);
+  }, [mapConfig.id, builderGrave]);
 
   // Sync bots and other players with otherPlayers prop
   useEffect(() => {
@@ -2539,7 +2543,7 @@ export const Scene: React.FC<SceneProps> = ({
   }, [mapConfig?.zombieSkins]);
 
   const interactables = useMemo(() => {
-    const items = mapConfig.interactables.map(i => ({
+    const items = mapConfig.interactables.filter(i => i.id !== 'gravestone').map(i => ({
       ...i,
       pos: new THREE.Vector3(...i.pos)
     }));
@@ -5773,14 +5777,16 @@ export const Scene: React.FC<SceneProps> = ({
       {interactables.map((item) => {
         // A custom .glb look replaces the built-in Pack-a-Punch, Mystery Box and Health Refill models.
         // (Perk machines with a custom look are drawn further down.)
-        if (item.modelUrl && (item.id === 'box' || item.id === 'pap' || item.id === 'healthRefill')) {
+        if (item.modelUrl && (item.id === 'box' || item.id === 'pap' || item.id === 'healthRefill' || item.id === 'buyableEnding')) {
           const skinHeight = machineBaseHeight(item) * (item.modelScale || 1);
           const zero = new THREE.Vector3(0, 0, 0);
           const plainMachine = item.id === 'box'
             ? <MysteryBox pos={zero} cyclingWeapon={cyclingWeapon} />
             : item.id === 'pap'
               ? <PackAPunchMachine pos={zero} />
-              : <HealthRefillStation pos={zero} isLocked={gameState.healthRefillsBought >= 3} />;
+              : item.id === 'buyableEnding'
+                ? <Box args={[10, 5, 0.5]} position={[0, 2.5, 0]}><meshStandardMaterial color="#222" metalness={0.8} roughness={0.2} /></Box>
+                : <HealthRefillStation pos={zero} isLocked={gameState.healthRefillsBought >= 3} />;
           return (
             <group key={item.id} position={item.pos} rotation={(item.rotation || [0, 0, 0]) as [number, number, number]}>
               <GLBBoundary fallback={plainMachine}>
@@ -5793,7 +5799,7 @@ export const Scene: React.FC<SceneProps> = ({
                   <WeaponModel weaponName={cyclingWeapon} camo="none" />
                 </Float>
               )}
-              <pointLight position={[0, Math.min(2, skinHeight), 1.5]} intensity={item.id === 'pap' ? 8 : 5} color={item.id === 'pap' ? '#c084fc' : item.id === 'box' ? '#00ffff' : (item.color || '#ff3333')} distance={8} />
+              <pointLight position={[0, Math.min(2, skinHeight), 1.5]} intensity={item.id === 'pap' ? 8 : 5} color={item.id === 'pap' ? '#c084fc' : item.id === 'box' ? '#00ffff' : item.id === 'buyableEnding' ? '#fbbf24' : (item.color || '#ff3333')} distance={item.id === 'buyableEnding' ? 14 : 8} />
             </group>
           );
         }
@@ -6647,7 +6653,18 @@ export const Scene: React.FC<SceneProps> = ({
         </group>
       </group>
       
-      <Gravestone position={currentGravePos} rotation={currentGraveRot} />
+      {isBuilderMap(mapConfig.id) && !builderGrave ? null : builderGrave?.modelUrl ? (
+        <group position={currentGravePos} rotation={currentGraveRot}>
+          <GLBBoundary fallback={<Gravestone position={new THREE.Vector3(0, 0, 0)} rotation={[0, 0, 0]} />}>
+            <Suspense fallback={null}>
+              <GLBProp url={builderGrave.modelUrl} size={[0, 5.5 * (builderGrave.modelScale || 1), 0]} mode="height" anchor="base" />
+            </Suspense>
+          </GLBBoundary>
+          <pointLight position={[0, 3, 2]} intensity={10} color="#ff0000" distance={15} />
+        </group>
+      ) : (
+        <Gravestone position={currentGravePos} rotation={currentGraveRot} />
+      )}
       
       {/* Story Mode Objectives UI */}
       {gameMode === 'story' && (

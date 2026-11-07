@@ -413,6 +413,8 @@ const Builder3DScene: React.FC<Builder3DSceneProps> = ({
           const nameTag = item.type.startsWith('PERK:') ? item.type.replace('PERK: ', '')
             : item.id === 'pap' || item.type.includes('Upgrade Station') ? 'PACK-A-PUNCH'
             : item.id === 'box' || item.type.includes('Gun Box') ? 'MYSTERY BOX'
+            : item.id === 'gravestone' || item.type === 'Gravestone' ? 'GRAVESTONE'
+            : item.id === 'buyableEnding' || item.type.includes('Buyable Ending') ? `ESCAPE DOOR ($${item.cost || 25000})`
             : 'HEALTH REFILL';
           return (
             <group
@@ -493,6 +495,30 @@ const Builder3DScene: React.FC<Builder3DSceneProps> = ({
               </Text>
               {isSelected && (
                 <Cylinder args={[2.5, 2.5, 0.1, 16]} position={[0, 0.05, 0]}>
+                  <meshBasicMaterial color="#38bdf8" transparent opacity={0.6} />
+                </Cylinder>
+              )}
+            </group>
+          );
+        }
+
+        // Gravestone (default look) - swap it for any of your .glb models with the "Machine look" box
+        if (item.id === 'gravestone' || item.type === 'Gravestone') {
+          return (
+            <group
+              key={`item-${idx}`}
+              position={pos}
+              rotation={rot}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelectItem({ type: 'interactable', index: idx });
+              }}
+            >
+              <Box args={[4, 0.5, 3]} position={[0, 0.25, 0]}><meshStandardMaterial color="#2a2a2a" roughness={0.9} /></Box>
+              <Box args={[3, 5, 0.8]} position={[0, 2.75, 0]}><meshStandardMaterial color="#3a3a3a" roughness={0.8} /></Box>
+              <Text position={[0, 5.9, 0]} fontSize={0.5} color="#ffffff" outlineWidth={0.04} outlineColor="#000000">GRAVESTONE</Text>
+              {isSelected && (
+                <Cylinder args={[2.6, 2.6, 0.1, 16]} position={[0, 0.05, 0]}>
                   <meshBasicMaterial color="#38bdf8" transparent opacity={0.6} />
                 </Cylinder>
               )}
@@ -936,6 +962,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
   const [showDesignStudio, setShowDesignStudio] = useState(false);
   const [showPublishModal, setShowPublishModal] = useState(false);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
+  const [settingsSeeThrough, setSettingsSeeThrough] = useState(false);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const [publishCreator, setPublishCreator] = useState(playerName);
   const [publishDescription, setPublishDescription] = useState(currentMap.description || 'A custom combat battleground!');
@@ -1017,7 +1044,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
     if (selectedAsset.type === 'perk' || selectedAsset.type === 'station' || selectedAsset.type === 'wallbuy') {
       const newItemId = `${selectedAsset.id}_${Date.now().toString(36)}`;
       const newInteractable: InteractableConfig = {
-        id: selectedAsset.id === 'box' || selectedAsset.id === 'pap' || selectedAsset.id === 'buyableEnding' || selectedAsset.id === 'healthRefill' || selectedAsset.id === 'craftingTable'
+        id: selectedAsset.id === 'box' || selectedAsset.id === 'pap' || selectedAsset.id === 'buyableEnding' || selectedAsset.id === 'healthRefill' || selectedAsset.id === 'gravestone' || selectedAsset.id === 'craftingTable'
           ? (selectedAsset.id === 'craftingTable' ? 'crafting' : selectedAsset.id)
           : newItemId,
         type: selectedAsset.interactableType || selectedAsset.name,
@@ -1035,6 +1062,17 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
         return;
       }
 
+      // Only one gravestone per map: placing it again moves the one you have
+      if (selectedAsset.id === 'gravestone') {
+        const gi = currentMap.interactables.findIndex(i => i.id === 'gravestone');
+        if (gi >= 0) {
+          const moved = currentMap.interactables.map((it, k) => k === gi ? { ...it, pos: [snapX, 0, snapZ] as [number, number, number] } : it);
+          pushHistory({ ...currentMap, interactables: moved });
+          setSelectedItem({ type: 'interactable', index: gi });
+          showToast(`Moved the Gravestone to [${snapX}, ${snapZ}]`);
+          return;
+        }
+      }
       const nextMap = { ...currentMap, interactables: [...currentMap.interactables, newInteractable] };
       pushHistory(nextMap);
       setSelectedItem({ type: 'interactable', index: currentMap.interactables.length });
@@ -1672,10 +1710,22 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
 
       {/* --- MAP SETTINGS PANEL: brightness, floor, zombies --- */}
       {showSettings && (
-        <div className="fixed top-16 right-2 left-2 sm:left-auto sm:w-[380px] max-h-[75vh] overflow-y-auto z-[200] bg-zinc-900/98 border border-yellow-500/40 rounded-xl shadow-2xl p-4 space-y-5">
-          <div className="flex items-center justify-between">
+        <div
+          className="fixed bottom-0 right-0 left-0 sm:left-auto sm:right-2 sm:bottom-2 sm:w-[380px] max-h-[42vh] overflow-y-auto overscroll-contain z-[200] border border-yellow-500/40 rounded-t-xl sm:rounded-xl shadow-2xl p-4 space-y-5"
+          style={{ background: settingsSeeThrough ? 'rgba(9,9,11,0.28)' : 'rgba(9,9,11,0.84)', backdropFilter: settingsSeeThrough ? 'none' : 'blur(3px)', transition: 'background 0.15s', touchAction: 'pan-y' }}
+        >
+          <div className="flex items-center justify-between gap-2 sticky top-0 -mt-1 pb-1" style={{ background: 'transparent' }}>
             <span className="text-yellow-400 font-black uppercase tracking-wider text-sm">⚙ Map Settings</span>
-            <button onClick={() => setShowSettings(false)} className="text-white/60 hover:text-white text-lg leading-none px-2">✕</button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setSettingsSeeThrough(v => !v)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-black border ${settingsSeeThrough ? 'bg-cyan-600 border-cyan-300 text-white' : 'bg-zinc-800 border-white/20 text-white/80'}`}
+                title="Fade this panel so you can see the whole map"
+              >
+                👁 See-through
+              </button>
+              <button onClick={() => setShowSettings(false)} className="text-white/80 hover:text-white text-lg leading-none px-2">✕</button>
+            </div>
           </div>
 
           {/* Brightness */}
@@ -1928,6 +1978,12 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                   ))}
                   {/* Interactables */}
                   {currentMap.interactables.map((item, i) => (
+                    <React.Fragment key={`i2d-${i}`}>
+                    {(item.id === 'gravestone' || item.id === 'buyableEnding') && (
+                      <text x={item.pos[0] * zoom} y={item.pos[2] * zoom - 3 * zoom} textAnchor="middle" fontSize={Math.max(10, 3.5 * zoom)} fill="#ffffff" style={{ pointerEvents: 'none' }}>
+                        {item.id === 'gravestone' ? '🪦 Grave' : '🚪 Escape'}
+                      </text>
+                    )}
                     <circle 
                       key={i} 
                       cx={item.pos[0] * zoom} 
@@ -1941,6 +1997,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                         setSelectedItem({ type: 'interactable', index: i });
                       }}
                     />
+                    </React.Fragment>
                   ))}
                   {/* Player Spawn */}
                   {currentMap.spawnPoints[0] && (
@@ -2125,7 +2182,8 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                     <input type="file" multiple accept=".glb,model/gltf-binary,application/octet-stream" className="hidden" onChange={async (e) => {
                       const files: File[] = e.target.files ? Array.from(e.target.files as ArrayLike<File>) : [];
                       e.target.value = '';
-                      const added = await uploadModelFiles(files, 'Perks');
+                      const pickedIt = currentMap.interactables[selectedItem.index];
+                      const added = await uploadModelFiles(files, pickedIt?.id === 'gravestone' ? 'Props' : pickedIt?.id === 'buyableEnding' ? 'Buildings' : 'Perks');
                       if (added[0] && selectedItem.type === 'interactable') setPerkSkin(selectedItem.index, `user:${added[0].id}`);
                     }} />
                   </label>
@@ -2160,7 +2218,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
 
         {/* --- BOTTOM PALETTE & ASSET DRAWER --- */}
         {isAssetMenuOpen && (
-          <aside className="w-80 md:w-96 bg-zinc-900/95 border-l border-white/10 flex flex-col shrink-0 z-20 absolute right-0 top-0 bottom-0 md:relative shadow-2xl">
+          <aside className="w-80 md:w-96 bg-zinc-900/95 border-l border-white/10 flex flex-col shrink-0 z-20 absolute right-0 top-0 bottom-0 md:relative shadow-2xl min-h-0 overflow-hidden">
             {/* Drawer Header with Close Button for Phones */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 bg-zinc-950">
               <span className="text-xs font-black text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
@@ -2175,6 +2233,8 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
               </button>
             </div>
 
+          {/* Everything below the header scrolls together, so long panels (My Models) never trap the list */}
+          <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain" style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-y' }}>
           {/* Category Tabs */}
           <div className="flex overflow-x-auto p-2 gap-1 border-b border-white/10 no-scrollbar shrink-0">
             {ASSET_CATEGORIES.map(cat => (
@@ -2364,7 +2424,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
           )}
 
           {/* Assets Grid */}
-          <div className="flex-1 overflow-y-auto p-3 grid grid-cols-2 gap-2 content-start">
+          <div className="p-3 pb-24 grid grid-cols-2 gap-2 content-start">
             {filteredAssets.map(asset => {
               const isSelected = selectedAssetId === asset.id;
               const isCustom = userCustomObjects.some(u => u.id === asset.id);
@@ -2423,6 +2483,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                 No items found. Click <strong className="text-amber-400 cursor-pointer" onClick={() => setShowDesignStudio(true)}>Design Your Own</strong> to create custom objects!
               </div>
             )}
+          </div>
           </div>
         </aside>
         )}

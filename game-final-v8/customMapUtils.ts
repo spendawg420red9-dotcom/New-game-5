@@ -706,6 +706,17 @@ export const ASSET_CATALOG: AssetDefinition[] = [
     interactableType: 'Buyable Ending',
     cost: 25000,
   },
+  {
+    id: 'gravestone',
+    name: 'Gravestone',
+    category: 'stations',
+    icon: '🪦',
+    description: 'The memorial gravestone. Swap it for any of your .glb models, move it, rotate it.',
+    type: 'station',
+    interactableType: 'Gravestone',
+    cost: 0,
+    color: '#9ca3af',
+  },
 
   // --- WALLBUYS ---
   {
@@ -1252,12 +1263,6 @@ export const BUILTIN_CUSTOM_DESIGNS: AssetDefinition[] = [
     modelUrl: '/assets/r9s/skatepark_floor.glb', colliders: [],
   },
   {
-    id: 'r9s_perk_juggernog', name: 'Juggernog Machine (R9S)', category: 'perks', icon: '❤️',
-    description: 'R9S 3D Juggernog machine. Same effect as Toughness Brew.',
-    type: 'perk', interactableType: 'PERK: Toughness Brew', cost: 2500, color: '#ef4444',
-    modelUrl: '/assets/r9s/perk_juggernog.glb',
-  },
-  {
     id: 'custom_zombie_biohazard', name: 'Biohazard Zombie', category: 'custom', icon: '☣️',
     description: 'Places a zombie spawner. Every zombie on this map becomes the Biohazard Armor model.',
     type: 'spawn_zombie', color: '#65a30d',
@@ -1286,12 +1291,12 @@ export const PLAYER_AVATARS: PlayerAvatarOption[] = [
 ];
 
 // "My Designs" shows exactly these 8 (in this order), plus anything the player makes themselves with the Design Studio.
-// The Juggernog machine lives in Perk Machines, and the old sample designs no longer show here.
+// The old sample designs no longer show here.
 const MY_DESIGN_IDS = [
   'r9s_skatepark_floor', 'custom_zombie_pickle', 'r9s_warehouse_shell', 'r9s_chamber_wall',
   'r9s_chamber_plain_wall', 'r9s_chainlink_fence', 'r9s_skull_gate', 'custom_zombie_biohazard',
 ];
-const HIDDEN_DESIGN_IDS = ['r9s_perk_juggernog', 'custom_obj_lava_pillar', 'custom_obj_cyber_barrier', 'custom_obj_gold_vault'];
+const HIDDEN_DESIGN_IDS = ['custom_obj_lava_pillar', 'custom_obj_cyber_barrier', 'custom_obj_gold_vault'];
 export const filterMyDesigns = (list: AssetDefinition[]): AssetDefinition[] => {
   const picked = MY_DESIGN_IDS.map(id => list.find(a => a.id === id)).filter((a): a is AssetDefinition => !!a);
   const own = list.filter(a => !MY_DESIGN_IDS.includes(a.id) && !HIDDEN_DESIGN_IDS.includes(a.id) && !BUILTIN_CUSTOM_DESIGNS.some(b => b.id === a.id));
@@ -1727,7 +1732,10 @@ export const recordCommunityMapScore = (mapId: string, score: { nickname: string
 export interface MachineKind { id: string; label: string; group: 'Stations' | 'Perks'; }
 
 // The game finds these by id, so a map can only hold one of each.
-const SINGLE_MACHINE_IDS = ['box', 'pap', 'healthRefill'];
+/** Maps made in the builder (and community maps). Their gravestone is an item you place yourself. */
+export const isBuilderMap = (id?: string): boolean => !!id && (id.startsWith('custom_') || id.startsWith('community_'));
+
+const SINGLE_MACHINE_IDS = ['box', 'pap', 'healthRefill', 'buyableEnding', 'gravestone'];
 
 export const MACHINE_KINDS: MachineKind[] = [
   ...SINGLE_MACHINE_IDS
@@ -1737,14 +1745,17 @@ export const MACHINE_KINDS: MachineKind[] = [
   ...ASSET_CATALOG.filter(a => a.type === 'perk').map(a => ({ id: a.id, label: a.name, group: 'Perks' as const })),
 ];
 
-/** Perk machines, Pack-a-Punch, Mystery Box and Health Refill can all wear a custom .glb look. */
+/** Perk machines, Pack-a-Punch, Mystery Box, Health Refill, the Gravestone and the Escape Door can all wear a custom .glb look. */
 export const isSkinnableMachine = (it: { id: string; type: string }): boolean =>
   it.type.startsWith('PERK:') || it.id === 'pap' || it.id === 'box' || it.id === 'healthRefill' ||
+  it.id === 'gravestone' || it.id === 'buyableEnding' || it.type === 'Gravestone' || it.type.includes('Buyable Ending') ||
   it.type.includes('Upgrade Station') || it.type.includes('Gun Box') || it.type.includes('Health Refill');
 
 /** Height (world units) of a machine's custom look at size x1. The Size -/+ buttons multiply this. */
 export const machineBaseHeight = (it: { id: string; type: string }): number =>
   it.id === 'box' || it.type.includes('Gun Box') ? 1.4
+    : it.id === 'gravestone' || it.type === 'Gravestone' ? 5.5
+    : it.id === 'buyableEnding' || it.type.includes('Buyable Ending') ? 6.5
     : it.id === 'healthRefill' || it.type.includes('Health Refill') ? 2.2
     : 3.2;
 
