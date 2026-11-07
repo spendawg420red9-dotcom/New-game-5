@@ -83,6 +83,8 @@ export interface AssetDefinition {
   roughness?: number;
   behavior?: 'solid' | 'hazard' | 'bounce' | 'spin' | 'decor';
   modelUrl?: string;
+  // My Models folder (Perks, Buildings, People...) for uploaded models
+  folder?: string;
   // For type 'spawn_zombie': use this GLB model as the map's zombie
   zombieModelUrl?: string;
   zombieModelScale?: number;
@@ -1682,4 +1684,135 @@ export const recordCommunityMapScore = (mapId: string, score: { nickname: string
     });
     localStorage.setItem(STORAGE_KEY_COMMUNITY, JSON.stringify(updated));
   } catch (e) {}
+};
+
+// ---------------------------------------------------------------------------
+// Machines: any model can be a perk machine, Pack-a-Punch, Mystery Box or Health Refill
+// ---------------------------------------------------------------------------
+export interface MachineKind { id: string; label: string; group: 'Stations' | 'Perks'; }
+
+// The game finds these by id, so a map can only hold one of each.
+const SINGLE_MACHINE_IDS = ['box', 'pap', 'healthRefill'];
+
+export const MACHINE_KINDS: MachineKind[] = [
+  ...SINGLE_MACHINE_IDS
+    .map(id => ASSET_CATALOG.find(a => a.id === id))
+    .filter((a): a is AssetDefinition => !!a)
+    .map(a => ({ id: a.id, label: a.name, group: 'Stations' as const })),
+  ...ASSET_CATALOG.filter(a => a.type === 'perk').map(a => ({ id: a.id, label: a.name, group: 'Perks' as const })),
+];
+
+/** Perk machines, Pack-a-Punch, Mystery Box and Health Refill can all wear a custom .glb look. */
+export const isSkinnableMachine = (it: { id: string; type: string }): boolean =>
+  it.type.startsWith('PERK:') || it.id === 'pap' || it.id === 'box' || it.id === 'healthRefill' ||
+  it.type.includes('Upgrade Station') || it.type.includes('Gun Box') || it.type.includes('Health Refill');
+
+/** Height (world units) of a machine's custom look at size x1. The Size -/+ buttons multiply this. */
+export const machineBaseHeight = (it: { id: string; type: string }): number =>
+  it.id === 'box' || it.type.includes('Gun Box') ? 1.4
+    : it.id === 'healthRefill' || it.type.includes('Health Refill') ? 2.2
+    : 3.2;
+
+/** The catalog entry (MACHINE_KINDS id) a machine currently is, or '' if it is something else. */
+export const machineKindOf = (it: { type: string }): string =>
+  MACHINE_KINDS.find(k => ASSET_CATALOG.find(a => a.id === k.id)?.interactableType === it.type)?.id ?? '';
+
+export interface MachineEditResult { map: MapConfig; error?: string; }
+
+const machineFromAsset = (
+  asset: AssetDefinition,
+  base: { pos: [number, number, number]; rotation?: [number, number, number]; modelUrl?: string; modelScale?: number },
+): InteractableConfig => ({
+  id: SINGLE_MACHINE_IDS.includes(asset.id) ? asset.id : `${asset.id}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 4)}`,
+  type: asset.interactableType || asset.name,
+  cost: asset.cost || 0,
+  pos: [base.pos[0], 0, base.pos[2]],
+  rotation: [0, base.rotation?.[1] || 0, 0],
+  color: asset.color || '#ffffff',
+  modelUrl: base.modelUrl,
+  modelScale: base.modelScale ?? 1,
+});
+
+const alreadyHas = (map: MapConfig, asset: AssetDefinition, ignoreIndex = -1) =>
+  SINGLE_MACHINE_IDS.includes(asset.id) && map.interactables.some((o, i) => i !== ignoreIndex && o.id === asset.id);
+
+/** Turns a placed model prop into a working machine (perk / Pack-a-Punch / Mystery Box ...) that keeps the model as its look. */
+export const objectToMachine = (map: MapConfig, objIndex: number, assetId: string): MachineEditResult => {
+  const obj = map.objects[objIndex];
+  const asset = ASSET_CATALOG.find(a => a.id === assetId);
+  if (!obj || !obj.modelUrl) return { map, error: 'Select a model prop first (one of your .glb models placed on the map)' };
+  if (!asset) return { map, error: 'That machine type was not found' };
+  if (alreadyHas(map, asset)) return { map, error: `This map already has: ${asset.name}. Only one is allowed - delete or change the old one first.` };
+  const machine = machineFromAsset(asset, { pos: obj.pos, rotation: obj.rotation, modelUrl: obj.modelUrl, modelScale: 1 });
+  return { map: { ...map, objects: map.objects.filter((_, i) => i !== objIndex), interactables: [...map.interactables, machine] } };
+};
+
+/** Turns a machine that has a custom model back into a plain solid prop with that model. */
+export const machineToObject = (
+  map: MapConfig,
+  itemIndex: number,
+  sizeOf?: (modelUrl: string) => [number, number, number] | null,
+): MachineEditResult => {
+  const it = map.interactables[itemIndex];
+  if (!it || !it.modelUrl) return { map, error: 'This machine has no custom model to turn into a prop' };
+  const r1 = (n: number) => Math.round(n * 10) / 10;
+  const h = r1(machineBaseHeight(it) * (it.modelScale || 1));
+  const sz = sizeOf?.(it.modelUrl);
+  const k = sz && sz[1] > 0 ? h / sz[1] : 1;
+  const args: [number, number, number] = sz ? [r1(sz[0] * k), h, r1(sz[2] * k)] : [r1(h * 0.6), h, r1(h * 0.6)];
+  const obj: MapObject = {
+    type: 'custom',
+    pos: [it.pos[0], h / 2, it.pos[2]],
+    args,
+    rotation: [0, it.rotation?.[1] || 0, 0],
+    modelUrl: it.modelUrl,
+    colliders: MODEL_DEFAULTS[it.modelUrl]?.colliders ?? [[0, 0, 1, 1]],
+  };
+  return { map: { ...map, interactables: map.interactables.filter((_, i) => i !== itemIndex), objects: [...map.objects, obj] } };
+};
+
+/** Changes which machine this is (e.g. Toughness Brew -> Pack-a-Punch) and keeps its look, position and size. */
+export const changeMachineKind = (map: MapConfig, itemIndex: number, assetId: string): MachineEditResult => {
+  const it = map.interactables[itemIndex];
+  const asset = ASSET_CATALOG.find(a => a.id === assetId);
+  if (!it || !asset) return { map, error: 'That machine type was not found' };
+  if (alreadyHas(map, asset, itemIndex)) return { map, error: `This map already has: ${asset.name}. Only one is allowed.` };
+  const interactables = [...map.interactables];
+  interactables[itemIndex] = machineFromAsset(asset, { pos: it.pos, rotation: it.rotation, modelUrl: it.modelUrl, modelScale: it.modelScale });
+  return { map: { ...map, interactables } };
+};
+
+// ---------------------------------------------------------------------------
+// Several maps: make a blank one, copy one
+// ---------------------------------------------------------------------------
+const newMapId = () => `custom_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+
+/** A fresh empty map (same sky, fog and floor as the first template, so it always plays). */
+export const createBlankCustomMap = (name = 'My New Map'): MapConfig => {
+  const base = PRESET_TEMPLATES[0].map;
+  return {
+    id: newMapId(),
+    name: name.slice(0, 28),
+    description: 'A custom combat battleground!',
+    thumbnail: base.thumbnail,
+    floorColor: base.floorColor,
+    floorTexture: base.floorTexture,
+    skyColor: base.skyColor,
+    fogColor: base.fogColor,
+    fogNear: base.fogNear,
+    fogFar: base.fogFar,
+    objects: [],
+    interactables: [],
+    spawnPoints: [[0, 1.2, 0], [20, 1.2, 20], [-20, 1.2, -20]],
+    craftingTablePos: [0, 1.5, 6],
+    customZombies: [],
+  };
+};
+
+/** An independent copy of a map under a new id. */
+export const duplicateCustomMap = (map: MapConfig): MapConfig => {
+  const copy: MapConfig = JSON.parse(JSON.stringify(map));
+  copy.id = newMapId();
+  copy.name = `${map.name} copy`.slice(0, 28);
+  return copy;
 };

@@ -7,17 +7,22 @@ import {
   Move, Plus, Check, Download, Upload, Copy, AlertCircle, 
   HelpCircle, Sparkles, Grid, Eye, Layers, Compass, ArrowUp, 
   ArrowDown, ArrowLeft, ArrowRight, Palette, Share2, Search,
-  Undo2, Redo2, Shield, Flame, Crosshair, Users, Globe, ExternalLink
+  Undo2, Redo2, Shield, Flame, Crosshair, Users, Globe, ExternalLink, Folder, FolderPlus, Map as MapIcon
 } from 'lucide-react';
 import { MapConfig, MapObject, InteractableConfig, CustomZombieConfig, CommunityMapEntry, ZombieMixEntry } from '../types';
 import { GLBProp, GLBBoundary } from './GLBProp';
 import { MODEL_DEFAULTS } from '../modelDefaults';
-import { UserModel, listUserModels, addUserModel, removeUserModel, subscribeUserModels } from '../userModels';
+import {
+  UserModel, listUserModels, addUserModels, removeUserModels, moveUserModels, subscribeUserModels,
+  listModelFolders, addModelFolder, removeModelFolder, DEFAULT_MODEL_FOLDERS, UNSORTED
+} from '../userModels';
 import { 
   ASSET_CATALOG, ASSET_CATEGORIES, MAP_THEMES, PRESET_TEMPLATES, TEXTURE_PRESETS, PLAYER_AVATARS,
   AssetDefinition, TexturePreset, saveCustomMap, loadSavedCustomMaps, deleteCustomMap,
   loadUserCustomObjects, saveUserCustomObject, deleteUserCustomObject,
-  saveLocalCommunityMap, floorObject, floorMapObjects, BUILTIN_ZOMBIE_KINDS, MODEL_ZOMBIE_PRESETS
+  saveLocalCommunityMap, floorObject, floorMapObjects, BUILTIN_ZOMBIE_KINDS, MODEL_ZOMBIE_PRESETS,
+  MACHINE_KINDS, MachineEditResult, isSkinnableMachine, machineBaseHeight, machineKindOf,
+  objectToMachine, machineToObject, changeMachineKind, createBlankCustomMap, duplicateCustomMap, setActiveCustomMapId
 } from '../customMapUtils';
 
 interface MapBuilderModalProps {
@@ -401,6 +406,40 @@ const Builder3DScene: React.FC<Builder3DSceneProps> = ({
         const pos = item.pos || [0, 0, 0];
         const rot = item.rotation || [0, 0, 0];
 
+        // A custom .glb look replaces the built-in model (perk machines, Pack-a-Punch, Mystery Box, Health Refill)
+        if (item.modelUrl && isSkinnableMachine(item)) {
+          const skinH = machineBaseHeight(item) * (item.modelScale || 1);
+          const nameTag = item.type.startsWith('PERK:') ? item.type.replace('PERK: ', '')
+            : item.id === 'pap' || item.type.includes('Upgrade Station') ? 'PACK-A-PUNCH'
+            : item.id === 'box' || item.type.includes('Gun Box') ? 'MYSTERY BOX'
+            : 'HEALTH REFILL';
+          return (
+            <group
+              key={`item-${idx}`}
+              position={pos}
+              rotation={rot}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelectItem({ type: 'interactable', index: idx });
+              }}
+            >
+              <GLBBoundary fallback={<Box args={[1.4, 3, 1.2]} position={[0, 1.5, 0]}><meshStandardMaterial color={item.color || '#ef4444'} /></Box>}>
+                <Suspense fallback={null}>
+                  <GLBProp url={item.modelUrl} size={[0, skinH, 0]} mode="height" anchor="base" />
+                </Suspense>
+              </GLBBoundary>
+              <Text position={[0, skinH + 0.5, 0]} fontSize={0.45} color="#ffffff" outlineWidth={0.04} outlineColor="#000000">
+                {nameTag}
+              </Text>
+              {isSelected && (
+                <Cylinder args={[1.6, 1.6, 0.1, 16]} position={[0, 0.05, 0]}>
+                  <meshBasicMaterial color="#38bdf8" transparent opacity={0.6} />
+                </Cylinder>
+              )}
+            </group>
+          );
+        }
+
         // Mystery Box
         if (item.id === 'box' || item.type.includes('Gun Box')) {
           return (
@@ -762,13 +801,14 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
   // Asset Catalog including user custom objects
   // Models the player uploaded (.glb) - usable as props, perk machine looks, or the zombie
   const [myModels, setMyModels] = useState<UserModel[]>(() => listUserModels());
-  useEffect(() => subscribeUserModels(() => setMyModels(listUserModels())), []);
+  const [modelFolders, setModelFolders] = useState<string[]>(() => listModelFolders());
+  useEffect(() => subscribeUserModels(() => { setMyModels(listUserModels()); setModelFolders(listModelFolders()); }), []);
   const myModelAssets = useMemo<AssetDefinition[]>(() => myModels.flatMap(m => {
     const k = 8 / Math.max(m.size[0], m.size[1], m.size[2]); // biggest side = 8 units, resize afterwards
     const args: [number, number, number] = [Math.round(m.size[0] * k * 10) / 10, Math.round(m.size[1] * k * 10) / 10, Math.round(m.size[2] * k * 10) / 10];
     return [
-      { id: `um_${m.id}`, name: m.name, category: 'mymodels' as const, icon: '📦', description: 'Your uploaded model. Solid prop - resize and rotate it after placing.', type: 'object' as const, objectType: 'custom' as const, defaultArgs: args, behavior: 'solid' as const, modelUrl: `user:${m.id}`, colliders: [[0, 0, 1, 1]] as [number, number, number, number][] },
-      { id: `umz_${m.id}`, name: `${m.name} (Zombie)`, category: 'mymodels' as const, icon: '🧟', description: 'Places a zombie spawner. Every zombie on this map becomes this model.', type: 'spawn_zombie' as const, color: '#65a30d', zombieModelUrl: `user:${m.id}`, zombieModelScale: 1, zombieName: m.name },
+      { id: `um_${m.id}`, folder: m.folder, name: m.name, category: 'mymodels' as const, icon: '📦', description: 'Your uploaded model. Solid prop - resize and rotate it after placing.', type: 'object' as const, objectType: 'custom' as const, defaultArgs: args, behavior: 'solid' as const, modelUrl: `user:${m.id}`, colliders: [[0, 0, 1, 1]] as [number, number, number, number][] },
+      { id: `umz_${m.id}`, folder: m.folder, name: `${m.name} (Zombie)`, category: 'mymodels' as const, icon: '🧟', description: 'Places a zombie spawner. Every zombie on this map becomes this model.', type: 'spawn_zombie' as const, color: '#65a30d', zombieModelUrl: `user:${m.id}`, zombieModelScale: 1, zombieName: m.name },
     ];
   }), [myModels]);
 
@@ -776,17 +816,78 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
     return [...ASSET_CATALOG, ...userCustomObjects, ...myModelAssets];
   }, [userCustomObjects, myModelAssets]);
 
-  const uploadModelFile = async (file: File | undefined | null): Promise<UserModel | null> => {
-    if (!file) return null;
-    if (!/\.glb$/i.test(file.name)) { showToast('Please pick a .glb file (export GLB from Meshy)'); return null; }
-    try {
-      const m = await addUserModel(file);
-      showToast(`Added "${m.name}" to My Models`);
-      return m;
-    } catch {
-      showToast('That file could not be read as a 3D model');
-      return null;
-    }
+  // Looks a machine can wear: your models (by folder, Perks first) and the built-in ones
+  const lookGroups = useMemo(() => {
+    const seen = new Set<string>();
+    const builtIn: { url: string; name: string }[] = [];
+    [...ASSET_CATALOG, ...userCustomObjects].forEach(a => {
+      if (a.modelUrl && a.type !== 'spawn_zombie' && !a.modelUrl.startsWith('user:') && !seen.has(a.modelUrl)) { seen.add(a.modelUrl); builtIn.push({ url: a.modelUrl, name: a.name }); }
+    });
+    const byFolder = new Map<string, { url: string; name: string }[]>();
+    myModels.forEach(m => { const list = byFolder.get(m.folder) || []; list.push({ url: `user:${m.id}`, name: m.name }); byFolder.set(m.folder, list); });
+    const names = Array.from(byFolder.keys()).sort((a, b) => (a === 'Perks' ? -1 : b === 'Perks' ? 1 : a.localeCompare(b)));
+    return [
+      ...names.map(f => ({ label: `📁 ${f}`, items: byFolder.get(f) || [] })),
+      { label: 'Built-in models', items: builtIn },
+    ].filter(g => g.items.length > 0);
+  }, [myModels, userCustomObjects]);
+
+  // ---- My Models: pick lots of .glb files at once and keep them in folders ----
+  const [modelFolder, setModelFolder] = useState<string>('All');        // folder being looked at
+  const [uploadTarget, setUploadTarget] = useState<string>('auto');     // where new uploads go ('auto' = sorted by file name)
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number; name: string } | null>(null);
+  const [uploadReport, setUploadReport] = useState<string[]>([]);       // problems from the last upload
+  const [manageModels, setManageModels] = useState(false);              // tick boxes: move / delete many at once
+  const [pickedModels, setPickedModels] = useState<string[]>([]);
+  const [newFolderName, setNewFolderName] = useState('');
+
+  // Adds every .glb in the list, one after another (safe for phones). Returns the models that can now be used,
+  // including ones that were already in My Models.
+  const uploadModelFiles = async (files: File[], folder?: string): Promise<UserModel[]> => {
+    if (files.length === 0) return [];
+    const glbs = files.filter(f => /\.glb$/i.test(f.name));
+    if (glbs.length === 0) { showToast('Please pick .glb files (export GLB from Meshy)'); return []; }
+    setUploadReport([]);
+    setUploadProgress({ done: 0, total: glbs.length, name: glbs[0].name });
+    const res = await addUserModels(glbs, folder ?? uploadTarget, (done, total, name) => setUploadProgress({ done, total, name }));
+    setUploadProgress(null);
+    const notes: string[] = res.failed.map(f => `${f.name}: ${f.reason}`);
+    if (files.length > glbs.length) notes.push(`${files.length - glbs.length} file(s) skipped - only .glb files work`);
+    if (res.unsaved.length) notes.push(`Not saved for next time (storage full?): ${res.unsaved.join(', ')}`);
+    setUploadReport(notes);
+    const parts: string[] = [];
+    if (res.added.length) parts.push(`Added ${res.added.length} model${res.added.length === 1 ? '' : 's'}`);
+    if (res.skipped.length) parts.push(`${res.skipped.length} already in My Models`);
+    if (res.failed.length) parts.push(`${res.failed.length} could not be read`);
+    showToast(parts.join(' · ') || 'Nothing added');
+    if (res.added.length && modelFolder !== 'All' && !res.added.some(m => m.folder === modelFolder)) setModelFolder('All');
+    const existing = res.skipped
+      .map(n => listUserModels().find(m => m.name === n.replace(/\.(glb|gltf)$/i, '').slice(0, 40)))
+      .filter((m): m is UserModel => !!m);
+    return [...res.added, ...existing];
+  };
+
+  const makeModelFolder = () => {
+    const f = addModelFolder(newFolderName);
+    if (!f) { showToast('Type a folder name first'); return; }
+    setNewFolderName('');
+    setModelFolder(f);
+    setUploadTarget(f);
+    showToast(`Folder "${f}" ready - new uploads go into it`);
+  };
+  const togglePickedModel = (id: string) => setPickedModels(p => (p.includes(id) ? p.filter(x => x !== id) : [...p, id]));
+  const movePickedModels = (folder: string) => {
+    if (!folder || pickedModels.length === 0) return;
+    moveUserModels(pickedModels, folder);
+    showToast(`Moved ${pickedModels.length} to ${folder}`);
+    setPickedModels([]);
+  };
+  const deletePickedModels = () => {
+    if (pickedModels.length === 0) return;
+    if (!confirm(`Remove ${pickedModels.length} model${pickedModels.length === 1 ? '' : 's'} from My Models?`)) return;
+    removeUserModels(pickedModels);
+    showToast(`Removed ${pickedModels.length}`);
+    setPickedModels([]);
   };
 
   // Selected tool & asset
@@ -834,6 +935,8 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
       list = userCustomObjects;
     } else if (selectedCategory === 'mymodels') {
       list = myModelAssets;
+      if (modelFolder !== 'All') list = list.filter(a => a.folder === modelFolder);
+      if (manageModels) list = list.filter(a => a.id.startsWith('um_')); // one card per model while selecting
     } else {
       list = combinedCatalog.filter(a => a.category === selectedCategory);
     }
@@ -842,7 +945,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
       list = list.filter(a => a.name.toLowerCase().includes(q) || a.description?.toLowerCase().includes(q));
     }
     return list;
-  }, [combinedCatalog, userCustomObjects, myModelAssets, selectedCategory, searchFilter]);
+  }, [combinedCatalog, userCustomObjects, myModelAssets, selectedCategory, searchFilter, modelFolder, manageModels]);
 
   // Place asset at World coordinates
   const placeAssetAt = (worldX: number, worldZ: number) => {
@@ -1039,6 +1142,30 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
     pushHistory({ ...currentMap, interactables: items });
   };
 
+  // ---- Make a model prop into a working machine (perk / Pack-a-Punch / Mystery Box ...) and back ----
+  const sizeOfModel = (url: string): [number, number, number] | null =>
+    combinedCatalog.find(a => a.modelUrl === url && a.defaultArgs)?.defaultArgs ?? null;
+  const applyMachineEdit = (r: MachineEditResult, doneMsg: string, select: { type: 'object' | 'interactable'; index: number }) => {
+    if (r.error) { showToast(r.error); return; }
+    pushHistory(r.map);
+    setSelectedItem(select);
+    showToast(doneMsg);
+  };
+  const makeSelectedAMachine = (assetId: string) => {
+    if (selectedItem?.type !== 'object' || !assetId) return;
+    const name = MACHINE_KINDS.find(k => k.id === assetId)?.label || 'machine';
+    applyMachineEdit(objectToMachine(currentMap, selectedItem.index, assetId), `Now a working ${name} - use Size -/+ to resize it`, { type: 'interactable', index: currentMap.interactables.length });
+  };
+  const changeSelectedMachine = (assetId: string) => {
+    if (selectedItem?.type !== 'interactable' || !assetId) return;
+    const name = MACHINE_KINDS.find(k => k.id === assetId)?.label || 'machine';
+    applyMachineEdit(changeMachineKind(currentMap, selectedItem.index, assetId), `Changed to ${name}`, { type: 'interactable', index: selectedItem.index });
+  };
+  const turnSelectedMachineIntoProp = () => {
+    if (selectedItem?.type !== 'interactable') return;
+    applyMachineEdit(machineToObject(currentMap, selectedItem.index, sizeOfModel), 'Now a plain solid prop', { type: 'object', index: currentMap.objects.length });
+  };
+
   // Rotate selected item by 90 degrees
   const rotateSelectedItem = () => {
     if (!selectedItem) return;
@@ -1178,6 +1305,60 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
     showToast(`Saved "${currentMap.name}"`);
   };
 
+  // ---- My Maps: keep several maps, switch between them, copy, delete ----
+  const [showMaps, setShowMaps] = useState(false);
+  const [savedMaps, setSavedMaps] = useState<MapConfig[]>(() => loadSavedCustomMaps());
+  const refreshSavedMaps = () => setSavedMaps(loadSavedCustomMaps());
+
+  const openMapInEditor = (m: MapConfig, keepCurrent = true) => {
+    if (keepCurrent) saveCustomMap(currentMap); // never lose what you were building
+    const next: MapConfig = {
+      ...m,
+      spawnPoints: m.spawnPoints && m.spawnPoints.length > 0 ? m.spawnPoints : [[0, 1.2, 0], [20, 1.2, 20], [-20, 1.2, -20]],
+      objects: m.objects ? [...m.objects] : [],
+      interactables: m.interactables ? [...m.interactables] : [],
+      customZombies: m.customZombies ? [...m.customZombies] : [],
+    };
+    setCurrentMap(next);
+    setHistory([next]);
+    setHistoryIndex(0);
+    setSelectedItem(null);
+    setPublishDescription(next.description || 'A custom combat battleground!');
+    setActiveCustomMapId(next.id);
+    refreshSavedMaps();
+    setShowMaps(false);
+    showToast(`Opened "${next.name}"`);
+  };
+  const startNewMap = () => {
+    saveCustomMap(currentMap);
+    const m = createBlankCustomMap(`My Map ${savedMaps.length + 1}`);
+    saveCustomMap(m);
+    openMapInEditor(m, false);
+  };
+  const copyMapInList = (m: MapConfig) => {
+    const c = duplicateCustomMap(m.id === currentMap.id ? currentMap : m);
+    saveCustomMap(c);
+    setActiveCustomMapId(currentMap.id);
+    refreshSavedMaps();
+    showToast(`Copied as "${c.name}"`);
+  };
+  const deleteMapInList = (m: MapConfig) => {
+    if (!confirm(`Delete "${m.name}"? This cannot be undone.`)) return;
+    const remaining = deleteCustomMap(m.id);
+    if (m.id === currentMap.id) {
+      const next = remaining[0] ?? createBlankCustomMap();
+      if (!remaining[0]) saveCustomMap(next);
+      openMapInEditor(next, false);
+    } else {
+      refreshSavedMaps();
+      showToast(`Deleted "${m.name}"`);
+    }
+  };
+  const playMapInList = (m: MapConfig) => {
+    saveCustomMap(currentMap);
+    onPlayMap(m.id === currentMap.id ? currentMap : m);
+  };
+
   // Publish map to Community Leaderboard
   const handlePublishToCommunity = () => {
     const entry: CommunityMapEntry = {
@@ -1311,6 +1492,16 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
             </button>
           </div>
 
+          {/* My Maps: switch between your maps, start a new one, copy or delete */}
+          <button
+            onClick={() => { saveCustomMap(currentMap); refreshSavedMaps(); setShowSettings(false); setShowMaps(v => !v); }}
+            className={`shrink-0 py-1.5 px-3 rounded-lg text-xs font-black uppercase tracking-wider flex items-center gap-1.5 border transition-colors ${showMaps ? 'bg-sky-600 text-white border-sky-300' : 'bg-zinc-800 text-white border-white/10 hover:bg-zinc-700'}`}
+            title="Your maps"
+          >
+            <MapIcon size={14} />
+            <span>My Maps</span>
+          </button>
+
           {/* Design Studio Button */}
           <button
             onClick={() => setShowDesignStudio(true)}
@@ -1374,7 +1565,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
           </select>
 
           <button
-            onClick={() => setShowSettings(v => !v)}
+            onClick={() => { setShowMaps(false); setShowSettings(v => !v); }}
             className={`shrink-0 py-2 px-3 text-xs font-black uppercase tracking-wider rounded-lg border transition-colors ${showSettings ? 'bg-yellow-500 text-black border-yellow-300' : 'bg-zinc-800 text-white border-white/10 hover:bg-zinc-700'}`}
             title="Brightness, floor and zombie settings"
           >
@@ -1417,6 +1608,46 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
           </button>
         </div>
       </header>
+
+      {/* --- MY MAPS PANEL --- */}
+      {showMaps && (
+        <div className="fixed top-16 right-2 left-2 sm:right-auto sm:w-[380px] max-h-[75vh] overflow-y-auto z-[200] bg-zinc-900/95 border border-sky-500/40 rounded-xl shadow-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sky-300 font-black uppercase tracking-wider text-sm">My Maps ({savedMaps.length})</span>
+            <button onClick={() => setShowMaps(false)} className="text-white/60 hover:text-white text-lg leading-none px-2" aria-label="Close">✕</button>
+          </div>
+          <button
+            onClick={startNewMap}
+            className="w-full py-2.5 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-white text-xs font-black uppercase tracking-wider rounded-xl flex items-center justify-center gap-2 active:scale-95 transition-all"
+          >
+            <Plus size={14} /> New blank map
+          </button>
+          <div className="space-y-2">
+            {savedMaps.map(m => {
+              const isCurrent = m.id === currentMap.id;
+              const shown = isCurrent ? currentMap : m;
+              return (
+                <div key={m.id} className={`rounded-xl border p-2.5 ${isCurrent ? 'border-sky-400 bg-sky-950/40' : 'border-white/10 bg-zinc-800/60'}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-white font-black text-sm truncate">{shown.name}</span>
+                    {isCurrent && <span className="text-[9px] font-black uppercase bg-sky-500 text-white px-1.5 py-0.5 rounded shrink-0">Editing</span>}
+                  </div>
+                  <div className="text-[10px] text-white/50 mt-0.5">
+                    {shown.objects?.length || 0} props · {shown.interactables?.length || 0} machines/buys · {Math.max(0, (shown.spawnPoints?.length || 1) - 1)} zombie spawns
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {!isCurrent && <button onClick={() => openMapInEditor(m)} className="px-2.5 py-1.5 bg-sky-600/80 hover:bg-sky-500 text-white rounded-lg text-[11px] font-black">Edit</button>}
+                    <button onClick={() => playMapInList(m)} className="px-2.5 py-1.5 bg-emerald-600/80 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-black">Play</button>
+                    <button onClick={() => copyMapInList(m)} className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-[11px] font-black">Copy</button>
+                    <button onClick={() => deleteMapInList(m)} className="px-2.5 py-1.5 bg-red-900/50 hover:bg-red-800/70 text-red-200 rounded-lg text-[11px] font-black">Delete</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-white/40 leading-snug">Your map saves by itself when you switch. Rename it with the name box at the top.</p>
+        </div>
+      )}
 
       {/* --- MAP SETTINGS PANEL: brightness, floor, zombies --- */}
       {showSettings && (
@@ -1550,7 +1781,17 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
         <div className="flex-1 relative bg-black overflow-hidden">
           {viewMode === '3d' ? (
             <div className="w-full h-full relative">
-              <Canvas shadows camera={{ position: [40, 50, 60], fov: 50 }}>
+              <Canvas
+                shadows
+                dpr={[1, 1.5]}
+                camera={{ position: [40, 50, 60], fov: 50 }}
+                onCreated={({ gl }) => {
+                  // If a phone runs low on graphics memory the browser can drop the 3D view. Allowing it to come back
+                  // (instead of staying blank) keeps the builder alive.
+                  gl.domElement.addEventListener('webglcontextlost', (ev) => { ev.preventDefault(); showToast('Graphics memory is low - recovering the 3D view...'); }, false);
+                  gl.domElement.addEventListener('webglcontextrestored', () => showToast('3D view recovered'), false);
+                }}
+              >
                 <Suspense fallback={null}>
                   <Builder3DScene 
                     mapConfig={currentMap}
@@ -1802,8 +2043,40 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
 
               <div className="h-5 w-px bg-white/10" />
 
-              {selectedItem.type === 'interactable' && currentMap.interactables[selectedItem.index]?.type?.startsWith('PERK:') && (
+              {selectedItem.type === 'object' && currentMap.objects[selectedItem.index]?.modelUrl && (
                 <>
+                  <select
+                    value=""
+                    onChange={(e) => makeSelectedAMachine(e.target.value)}
+                    className="bg-fuchsia-900/60 border border-fuchsia-400/50 text-white text-xs font-bold rounded-lg px-2 py-2 max-w-[150px]"
+                    title="Turn this model into a working perk machine, Pack-a-Punch, Mystery Box..."
+                  >
+                    <option value="">Make it a…</option>
+                    {(['Stations', 'Perks'] as const).map(g => (
+                      <optgroup key={g} label={g === 'Stations' ? 'Stations' : 'Perk machines'}>
+                        {MACHINE_KINDS.filter(k => k.group === g).map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
+                      </optgroup>
+                    ))}
+                  </select>
+                  <div className="h-5 w-px bg-white/10" />
+                </>
+              )}
+
+              {selectedItem.type === 'interactable' && currentMap.interactables[selectedItem.index] && isSkinnableMachine(currentMap.interactables[selectedItem.index]) && (
+                <>
+                  <select
+                    value={machineKindOf(currentMap.interactables[selectedItem.index])}
+                    onChange={(e) => changeSelectedMachine(e.target.value)}
+                    className="bg-fuchsia-900/60 border border-fuchsia-400/50 text-white text-xs font-bold rounded-lg px-2 py-2 max-w-[150px]"
+                    title="Which machine this is"
+                  >
+                    {!machineKindOf(currentMap.interactables[selectedItem.index]) && <option value="">Machine…</option>}
+                    {(['Stations', 'Perks'] as const).map(g => (
+                      <optgroup key={g} label={g === 'Stations' ? 'Stations' : 'Perk machines'}>
+                        {MACHINE_KINDS.filter(k => k.group === g).map(k => <option key={k.id} value={k.id}>{k.label}</option>)}
+                      </optgroup>
+                    ))}
+                  </select>
                   <select
                     value={currentMap.interactables[selectedItem.index]?.modelUrl || ''}
                     onChange={(e) => setPerkSkin(selectedItem.index, e.target.value)}
@@ -1811,27 +2084,35 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                     title="Machine look"
                   >
                     <option value="">Default machine</option>
-                    {Array.from(new Map(combinedCatalog.filter(a => a.modelUrl && a.type !== 'spawn_zombie').map(a => [a.modelUrl as string, a.name])).entries()).map(([url, name]) => (
-                      <option key={url} value={url}>{name}</option>
+                    {lookGroups.map(g => (
+                      <optgroup key={g.label} label={g.label}>
+                        {g.items.map(o => <option key={o.url} value={o.url}>{o.name}</option>)}
+                      </optgroup>
                     ))}
                   </select>
-                  <button
-                    onClick={() => setPerkSkin(selectedItem.index, currentMap.interactables[selectedItem.index]?.modelUrl || '', true)}
-                    className="px-2 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-bold whitespace-nowrap"
-                    title="Use this look on every perk machine"
-                  >
-                    All perks
-                  </button>
+                  {currentMap.interactables[selectedItem.index]?.type?.startsWith('PERK:') && (
+                    <button
+                      onClick={() => setPerkSkin(selectedItem.index, currentMap.interactables[selectedItem.index]?.modelUrl || '', true)}
+                      className="px-2 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-bold whitespace-nowrap"
+                      title="Use this look on every perk machine"
+                    >
+                      All perks
+                    </button>
+                  )}
                   <label className="px-2 py-2 bg-purple-600/80 hover:bg-purple-500 text-white rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer" title="Pick a .glb from your phone and use it as this machine">
                     Use my model
-                    <input type="file" accept=".glb,model/gltf-binary" className="hidden" onChange={async (e) => {
-                      const f = e.target.files?.[0]; e.target.value = '';
-                      const m = await uploadModelFile(f);
-                      if (m && selectedItem.type === 'interactable') setPerkSkin(selectedItem.index, `user:${m.id}`);
+                    <input type="file" multiple accept=".glb,model/gltf-binary,application/octet-stream" className="hidden" onChange={async (e) => {
+                      const files: File[] = e.target.files ? Array.from(e.target.files as ArrayLike<File>) : [];
+                      e.target.value = '';
+                      const added = await uploadModelFiles(files, 'Perks');
+                      if (added[0] && selectedItem.type === 'interactable') setPerkSkin(selectedItem.index, `user:${added[0].id}`);
                     }} />
                   </label>
                   <button onClick={() => setPerkScale(selectedItem.index, 1 / 1.15)} className="px-2 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-black" title="Make this machine smaller">Size −</button>
                   <button onClick={() => setPerkScale(selectedItem.index, 1.15)} className="px-2 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-black" title="Make this machine bigger">Size +</button>
+                  {currentMap.interactables[selectedItem.index]?.modelUrl && (
+                    <button onClick={turnSelectedMachineIntoProp} className="px-2 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-bold whitespace-nowrap" title="Turn this back into a plain solid prop">Plain prop</button>
+                  )}
                   <div className="h-5 w-px bg-white/10" />
                 </>
               )}
@@ -1916,19 +2197,111 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
           {selectedCategory === 'mymodels' && (
             <div className="p-3 border-b border-white/5 flex flex-col gap-2">
               <label className="w-full py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-black uppercase tracking-wider rounded-xl flex items-center justify-center gap-2 cursor-pointer active:scale-95 transition-all">
-                <Upload size={14} /> Upload my model (.glb)
-                <input type="file" accept=".glb,model/gltf-binary" className="hidden" onChange={async (e) => { const f = e.target.files?.[0]; e.target.value = ''; await uploadModelFile(f); }} />
+                <Upload size={14} /> Upload models (.glb) - pick many
+                <input type="file" multiple accept=".glb,model/gltf-binary,application/octet-stream" className="hidden" onChange={async (e) => {
+                  const files: File[] = e.target.files ? Array.from(e.target.files as ArrayLike<File>) : [];
+                  e.target.value = '';
+                  await uploadModelFiles(files);
+                }} />
               </label>
-              <p className="text-[10px] text-white/50 leading-snug">
-                Each model becomes a placeable prop and a zombie. Use it as a perk machine by selecting a perk on the map and choosing it in the look list. Models stay saved on this device.
-              </p>
-              {myModels.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {myModels.map(m => (
-                    <button key={m.id} onClick={() => { if (confirm(`Remove "${m.name}" from My Models?`)) removeUserModel(m.id); }} className="px-2 py-1 bg-white/5 hover:bg-red-900/40 text-white/60 hover:text-red-300 rounded text-[10px] font-bold">✕ {m.name}</button>
-                  ))}
+
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-bold text-white/50 uppercase shrink-0">Put in</span>
+                <select
+                  value={uploadTarget}
+                  onChange={(e) => setUploadTarget(e.target.value)}
+                  className="flex-1 min-w-0 bg-zinc-800 border border-white/10 text-white text-xs font-bold rounded-lg px-2 py-1.5"
+                >
+                  <option value="auto">Auto (sort by file name)</option>
+                  {modelFolders.map(f => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </div>
+
+              {uploadProgress && (
+                <div className="space-y-1">
+                  <div className="h-2 bg-white/10 rounded-full overflow-hidden">
+                    <div className="h-full bg-purple-500 transition-all" style={{ width: `${Math.round((uploadProgress.done / Math.max(1, uploadProgress.total)) * 100)}%` }} />
+                  </div>
+                  <div className="text-[10px] text-white/60 truncate">
+                    Adding {Math.min(uploadProgress.done + 1, uploadProgress.total)} of {uploadProgress.total}{uploadProgress.name ? ` - ${uploadProgress.name}` : ''}
+                  </div>
                 </div>
               )}
+
+              {uploadReport.length > 0 && (
+                <div className="bg-red-950/40 border border-red-500/30 rounded-lg p-2 text-[10px] text-red-200 leading-snug space-y-0.5">
+                  {uploadReport.slice(0, 6).map((n, i) => <div key={i}>{n}</div>)}
+                  {uploadReport.length > 6 && <div>…and {uploadReport.length - 6} more</div>}
+                  <button onClick={() => setUploadReport([])} className="underline text-red-300 mt-1">Dismiss</button>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-1">
+                {['All', ...modelFolders].map(f => {
+                  const n = f === 'All' ? myModels.length : myModels.filter(m => m.folder === f).length;
+                  const on = modelFolder === f;
+                  return (
+                    <button
+                      key={f}
+                      onClick={() => { setModelFolder(f); setPickedModels([]); }}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-black flex items-center gap-1 border ${on ? 'bg-purple-600 border-purple-300 text-white' : 'bg-zinc-800 border-white/10 text-white/70 hover:text-white'}`}
+                    >
+                      {f !== 'All' && <Folder size={10} />}{f}<span className="opacity-60">{n}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex gap-1">
+                <input
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') makeModelFolder(); }}
+                  maxLength={24}
+                  placeholder="New folder name"
+                  className="flex-1 min-w-0 bg-zinc-800 border border-white/10 text-white text-xs rounded-lg px-2 py-1.5 outline-none focus:border-purple-400"
+                />
+                <button onClick={makeModelFolder} className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-[10px] font-black flex items-center gap-1 shrink-0">
+                  <FolderPlus size={12} /> Add
+                </button>
+              </div>
+
+              {modelFolder !== 'All' && !DEFAULT_MODEL_FOLDERS.includes(modelFolder) && modelFolder !== UNSORTED && (
+                <button
+                  onClick={() => { if (confirm(`Delete the folder "${modelFolder}"? Its models move to Unsorted.`)) { removeModelFolder(modelFolder); setModelFolder('All'); } }}
+                  className="self-start text-[10px] text-red-300 underline"
+                >
+                  Delete folder "{modelFolder}"
+                </button>
+              )}
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={() => { setManageModels(v => !v); setPickedModels([]); }}
+                  className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border ${manageModels ? 'bg-amber-500 text-black border-amber-300' : 'bg-zinc-800 text-white border-white/10 hover:bg-zinc-700'}`}
+                >
+                  {manageModels ? 'Done' : 'Select many'}
+                </button>
+                {manageModels && (
+                  <>
+                    <button onClick={() => setPickedModels(filteredAssets.map(a => a.id.slice(3)))} className="px-2 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-[10px] font-black">Select all</button>
+                    <select
+                      value=""
+                      onChange={(e) => movePickedModels(e.target.value)}
+                      disabled={pickedModels.length === 0}
+                      className="bg-zinc-800 border border-white/10 text-white text-[10px] font-bold rounded-lg px-1.5 py-1.5 disabled:opacity-40 max-w-[120px]"
+                    >
+                      <option value="">Move {pickedModels.length} to…</option>
+                      {modelFolders.map(f => <option key={f} value={f}>{f}</option>)}
+                    </select>
+                    <button onClick={deletePickedModels} disabled={pickedModels.length === 0} className="px-2 py-1.5 bg-red-900/60 hover:bg-red-800 text-red-100 rounded-lg text-[10px] font-black disabled:opacity-40">Delete</button>
+                  </>
+                )}
+              </div>
+
+              <p className="text-[10px] text-white/50 leading-snug">
+                Each model becomes a placeable prop and a zombie. To make one a perk machine or Pack-a-Punch: place it, tap it, then pick "Make it a…" in the bar at the bottom. Models stay saved on this device.
+              </p>
             </div>
           )}
 
@@ -1941,6 +2314,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                 <div
                   key={asset.id}
                   onClick={() => {
+                    if (selectedCategory === 'mymodels' && manageModels) { togglePickedModel(asset.id.slice(3)); return; }
                     setSelectedAssetId(asset.id);
                     showToast(`Selected ${asset.name}. Tap map to place.`);
                   }}
@@ -1969,9 +2343,15 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                       <Trash2 size={12} />
                     </button>
                   )}
+                  {selectedCategory === 'mymodels' && manageModels && (
+                    <span className={`absolute top-1.5 left-1.5 w-5 h-5 rounded-md border-2 flex items-center justify-center text-[11px] font-black ${pickedModels.includes(asset.id.slice(3)) ? 'bg-amber-400 border-amber-200 text-black' : 'border-white/40 text-transparent'}`}>✓</span>
+                  )}
                   <span className="text-2xl drop-shadow">{asset.icon}</span>
                   <span className="text-xs font-black text-white leading-tight line-clamp-1">{asset.name}</span>
                   <span className="text-[10px] text-white/50 leading-tight line-clamp-2">{asset.description}</span>
+                  {selectedCategory === 'mymodels' && asset.folder && (
+                    <span className="text-[9px] font-bold text-purple-300/80 flex items-center gap-0.5"><Folder size={9} />{asset.folder}</span>
+                  )}
                   {asset.cost !== undefined && asset.cost > 0 && (
                     <span className="text-[10px] font-mono font-bold text-amber-400 mt-0.5">
                       ${asset.cost}

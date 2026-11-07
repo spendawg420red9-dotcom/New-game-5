@@ -133,6 +133,9 @@ export interface HUDSettings {
   slidePos?: { x: number; y: number };
   bossHealthPos?: { x: number; y: number };
   bossHealthScale?: number;
+  // Size of each button / info box set with the finger layout editor (1 = normal size). Missing = 1.
+  // Multiplies the Button Scale / HUD Scale above, so those still work as before.
+  sizes?: Partial<Record<string, number>>;
 }
 
 export interface GamepadSettings {

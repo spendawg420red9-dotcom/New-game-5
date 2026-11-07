@@ -2,7 +2,8 @@
 import React, { useRef, useState, useEffect, useMemo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Sky, Stars, Plane, Box, Sphere, Cylinder, Cone, Grid, Float, useTexture, Sparkles, Text, Torus, Html, Instances, Instance, useGLTF } from '@react-three/drei';
-import { GLBProp, GLBBoundary, PlayerAvatar, getSharedEnv, toPlainGeometry } from './GLBProp';
+import { GLBProp, GLBBoundary, PlayerAvatar, getSharedEnv, toPlainGeometry, shrinkSceneTextures } from './GLBProp';
+import { machineBaseHeight } from '../customMapUtils';
 import { resolveModelUrl } from '../userModels';
 import { MODEL_DEFAULTS } from '../modelDefaults';
 import { User, Skull, Shield, Zap, Swords } from 'lucide-react';
@@ -5759,6 +5760,32 @@ export const Scene: React.FC<SceneProps> = ({
       ))}
 
       {interactables.map((item) => {
+        // A custom .glb look replaces the built-in Pack-a-Punch, Mystery Box and Health Refill models.
+        // (Perk machines with a custom look are drawn further down.)
+        if (item.modelUrl && (item.id === 'box' || item.id === 'pap' || item.id === 'healthRefill')) {
+          const skinHeight = machineBaseHeight(item) * (item.modelScale || 1);
+          const zero = new THREE.Vector3(0, 0, 0);
+          const plainMachine = item.id === 'box'
+            ? <MysteryBox pos={zero} cyclingWeapon={cyclingWeapon} />
+            : item.id === 'pap'
+              ? <PackAPunchMachine pos={zero} />
+              : <HealthRefillStation pos={zero} isLocked={gameState.healthRefillsBought >= 3} />;
+          return (
+            <group key={item.id} position={item.pos} rotation={(item.rotation || [0, 0, 0]) as [number, number, number]}>
+              <GLBBoundary fallback={plainMachine}>
+                <Suspense fallback={null}>
+                  <GLBProp url={item.modelUrl} size={[0, skinHeight, 0]} mode="height" anchor="base" />
+                </Suspense>
+              </GLBBoundary>
+              {item.id === 'box' && cyclingWeapon && (
+                <Float speed={2} rotationIntensity={0.5} floatIntensity={0.5} position={[0, skinHeight + 1.1, 0]}>
+                  <WeaponModel weaponName={cyclingWeapon} camo="none" />
+                </Float>
+              )}
+              <pointLight position={[0, Math.min(2, skinHeight), 1.5]} intensity={item.id === 'pap' ? 8 : 5} color={item.id === 'pap' ? '#c084fc' : item.id === 'box' ? '#00ffff' : (item.color || '#ff3333')} distance={8} />
+            </group>
+          );
+        }
         if (item.id === 'box') return <MysteryBox key={item.id} pos={item.pos} cyclingWeapon={cyclingWeapon} />;
         if (item.id === 'pap') return <PackAPunchMachine key={item.id} pos={item.pos} />;
         if (item.id === 'healthRefill') return <HealthRefillStation key={item.id} pos={item.pos} isLocked={gameState.healthRefillsBought >= 3} />;
@@ -7570,6 +7597,7 @@ const BotInstance: React.FC<{
 //  - body bobs and the head is left alone.
 const CustomModelZombie: React.FC<{ url: string; scale?: number; hitFlash: number }> = ({ url, scale = 1, hitFlash }) => {
   const { scene } = useGLTF(resolveModelUrl(url)) as any;
+  shrinkSceneTextures(scene);
   const { gl } = useThree();
   const root = useRef<THREE.Group>(null);
   const meshRef = useRef<THREE.Mesh>(null);

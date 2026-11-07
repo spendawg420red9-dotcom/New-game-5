@@ -22,7 +22,9 @@ import { getRoundLore } from './services/geminiService';
 import { soundService } from './services/soundService';
 import { MAPS } from './maps';
 import { MapBuilderModal } from './components/MapBuilderModal';
-import { floorMapObjects, getActiveCustomMap, saveCustomMap, loadLocalCommunityMaps, likeLocalCommunityMap, recordCommunityMapScore } from './customMapUtils';
+import { HudLayoutEditor } from './components/HudLayoutEditor';
+import type { HudPosKey } from './hudLayout';
+import { floorMapObjects, getActiveCustomMap, saveCustomMap, loadLocalCommunityMaps, likeLocalCommunityMap, recordCommunityMapScore, loadSavedCustomMaps, setActiveCustomMapId } from './customMapUtils';
 import { io, Socket } from 'socket.io-client';
 import { Skull, Target, Database, RefreshCw, Activity, ShoppingCart, Zap, Gauge, Heart, Shield, Box as BoxIcon, Crosshair, TrendingUp, Pause, Play, LogOut, PlusCircle, UserX, Wind, RotateCcw, AlertCircle, Timer, Swords, Bomb, Sun, Crosshair as HeadshotIcon, Zap as PapIcon, Trophy, User, ChevronLeft, ChevronRight, Trash2, ArrowUp, Zap as SlideIcon, Snowflake, Flame, Scissors, Hourglass, Map as MapIcon, Gamepad, Bluetooth, Keyboard, Eye, X, Gem, Egg, Wrench, Star, Medal, Award, Crown, ChevronUp, ChevronDown, CheckCircle2, Check, Droplet, CircleDot, Search, Hand, Layers, VolumeX, Lock, Unlock, UserPlus, Users, MessageSquare, MousePointer2, Move, Cpu, Copy, ZoomIn, ZoomOut, Bell } from 'lucide-react';
 
@@ -2535,6 +2537,9 @@ const App: React.FC = () => {
 
   const [customMapData, setCustomMapData] = useState<MapConfig>(() => getActiveCustomMap());
   const [showMapBuilder, setShowMapBuilder] = useState(false);
+  const [showHudEditor, setShowHudEditor] = useState(false); // finger layout editor (move / resize buttons)
+  // Maps saved on this device, for the map picker on the custom game screen
+  const savedCustomMaps = useMemo(() => loadSavedCustomMaps(), [showMapBuilder, customMapData]);
 
   const activeMapConfig = useMemo(() => {
     if (stats.activeMapId === 'custom_map' || customGameConfig.gameMode === 'make_your_own' || customGameConfig.mapId === 'custom_map') {
@@ -6177,6 +6182,8 @@ const App: React.FC = () => {
   // HUD visibility + crosshair (options: hudOptions.ts, settings panels: components/HudControls.tsx)
   // ---------------------------------------------------------------------------
   const hudMinimapOn = hudSettings?.minimapVisible ?? true;
+  // Size of one button / info box set with the finger layout editor (1 = normal)
+  const hudSize = (key: string): number => hudSettings?.sizes?.[key] ?? 1;
   const hudView = toHudView(hudVis, hudMinimapOn);
   // The real HUD is on screen while playing, and while the pause-settings "Preview on screen" is open.
   const hudLive = status === GameStatus.PLAYING || (status === GameStatus.PAUSED && hudPreview);
@@ -6683,7 +6690,7 @@ const App: React.FC = () => {
         />
       )}
       <div className="absolute inset-0 z-0">
-        <Canvas key={gameKey} gl={{ antialias: !gameSettings.batterySaver, alpha: false }} dpr={gameSettings.batterySaver ? 1 : Math.min(window.devicePixelRatio, 2)} camera={{ fov: 75, near: 0.01, far: 1000 }}>
+        <Canvas key={gameKey} gl={{ antialias: !gameSettings.batterySaver, alpha: false }} dpr={gameSettings.batterySaver ? 1 : Math.min(window.devicePixelRatio, 2)} camera={{ fov: 75, near: 0.01, far: 1000 }} onCreated={({ gl }) => { gl.domElement.addEventListener('webglcontextlost', (ev) => ev.preventDefault(), false); }}>
           <Suspense fallback={null}>
             <Scene 
               isPlayOfTheGame={isPlayOfTheGame}
@@ -6875,7 +6882,7 @@ const App: React.FC = () => {
               style={{ 
                 top: `${hudSettings.bossHealthPos?.y ?? 32}px`, 
                 left: `${hudSettings.bossHealthPos?.x ?? 50}%`, 
-                transform: `translateX(-50%) scale(${hudSettings.bossHealthScale ?? 1})`,
+                transform: `translateX(-50%) scale(${(hudSettings.bossHealthScale ?? 1) * hudSize('bossHealthPos')})`,
                 transformOrigin: 'top center'
               }}
             >
@@ -6894,7 +6901,7 @@ const App: React.FC = () => {
           {(hudVis.round || hudVis.zombies || hudVis.points || hudVis.level || hudVis.timer || hudVis.perks || hudVis.powerups) && (
             <div
               className="absolute z-20 space-y-3 pointer-events-none"
-              style={{ top: hudSettings.statsPos.y, left: hudSettings.statsPos.x, transform: `scale(${hudSettings.hudScale})`, transformOrigin: 'top left', opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
+              style={{ top: hudSettings.statsPos.y, left: hudSettings.statsPos.x, transform: `scale(${hudSettings.hudScale * hudSize('statsPos')})`, transformOrigin: 'top left', opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
             >
               {customGameConfig.gameMode !== 'multiplayer' && (
                 <>
@@ -7098,7 +7105,7 @@ const App: React.FC = () => {
 
           <div 
             className="absolute z-20 flex flex-col items-end pointer-events-none text-right"
-            style={{ top: hudSettings.pausePos.y, right: hudSettings.pausePos.x, transform: `scale(${hudSettings.hudScale})`, transformOrigin: 'top right' }}
+            style={{ top: hudSettings.pausePos.y, right: hudSettings.pausePos.x, transform: `scale(${hudSettings.hudScale * hudSize('pausePos')})`, transformOrigin: 'top right' }}
           >
             <button 
               onClick={(e) => { e.stopPropagation(); togglePause(); }}
@@ -7124,7 +7131,7 @@ const App: React.FC = () => {
               {hudVis.weapon && (
               <div 
                 className="absolute z-20 flex flex-col items-end gap-3 pointer-events-none text-right"
-                style={{ top: hudSettings.weaponPos.y, right: hudSettings.weaponPos.x, transform: `scale(${hudSettings.hudScale})`, transformOrigin: 'top right', opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
+                style={{ top: hudSettings.weaponPos.y, right: hudSettings.weaponPos.x, transform: `scale(${hudSettings.hudScale * hudSize('weaponPos')})`, transformOrigin: 'top right', opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
               >
                 <div className="flex flex-col items-end bg-black/60 px-3.5 py-2 rounded-sm border border-emerald-500/20 backdrop-blur-md shadow-[0_4px_24px_rgba(0,0,0,0.5)]">
                   <div className="text-[8px] font-black text-emerald-500/60 uppercase tracking-[0.2em] mb-1 flex items-center gap-1.5 justify-end" id="hud-weapon-label">
@@ -7152,7 +7159,7 @@ const App: React.FC = () => {
               {hudVis.health && (
               <div 
                 className="absolute z-20 pointer-events-none"
-                style={{ top: hudSettings.healthBarPos.y, left: hudSettings.healthBarPos.x, transform: `scale(${hudSettings.hudScale})`, transformOrigin: 'top left', opacity: hudHealthOpacity, transition: 'opacity 0.5s ease' }}
+                style={{ top: hudSettings.healthBarPos.y, left: hudSettings.healthBarPos.x, transform: `scale(${hudSettings.hudScale * hudSize('healthBarPos')})`, transformOrigin: 'top left', opacity: hudHealthOpacity, transition: 'opacity 0.5s ease' }}
               >
                 <div className="flex items-center gap-3 bg-black/40 p-2 rounded-full border border-white/10 backdrop-blur-sm relative">
                   {isShieldActive ? (
@@ -7209,7 +7216,7 @@ const App: React.FC = () => {
               mapConfig={activeMapConfig}
               visible={hudSettings?.minimapVisible ?? true}
               position={hudSettings?.minimapPos || { x: 20, y: 20 }}
-              scale={(hudSettings?.minimapScale || 1) * (hudSettings?.hudScale || 1)}
+              scale={(hudSettings?.minimapScale || 1) * (hudSettings?.hudScale || 1) * hudSize('minimapPos')}
             />
           )}
 
@@ -7229,7 +7236,7 @@ const App: React.FC = () => {
                    }} 
                    onSprint={(active) => { sprintRequest.current = active; setIsSprinting(active); }}
                    label="Movement" 
-                   scale={hudSettings.buttonScale * hudSettings.hudScale}
+                   scale={hudSettings.buttonScale * hudSettings.hudScale * hudSize('joystickPos')}
                  />
               </div>
               )}
@@ -7246,7 +7253,7 @@ const App: React.FC = () => {
                        phoneShootRequest.current = (x !== 0 || y !== 0);
                      }} 
                      label="Aim & Shoot" 
-                     scale={hudSettings.buttonScale * hudSettings.hudScale}
+                     scale={hudSettings.buttonScale * hudSettings.hudScale * hudSize('joystickPos')}
                    />
                 </div>
                 )
@@ -7259,7 +7266,7 @@ const App: React.FC = () => {
                     onTouchStart={throwGrenade} 
                     onMouseDown={throwGrenade} 
                     className="absolute z-30 pointer-events-auto w-16 h-16 bg-gray-800/80 active:bg-gray-600 rounded-full flex flex-col items-center justify-center border-2 border-white/20 shadow-xl active:scale-90 transition-all backdrop-blur-md"
-                    style={{ bottom: hudSettings.grenadePos.y, left: hudSettings.grenadePos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity }}
+                    style={{ bottom: hudSettings.grenadePos.y, left: hudSettings.grenadePos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('grenadePos')})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity }}
                   >
                      <Bomb size={24} className="text-white" />
                      <span className="text-[10px] font-black text-white">{stats.grenades}</span>
@@ -7271,7 +7278,7 @@ const App: React.FC = () => {
                     onTouchStart={throwFlashbang} 
                     onMouseDown={throwFlashbang} 
                     className="absolute z-30 pointer-events-auto w-16 h-16 bg-yellow-800/80 active:bg-yellow-600 rounded-full flex flex-col items-center justify-center border-2 border-white/20 shadow-xl active:scale-90 transition-all backdrop-blur-md"
-                    style={{ bottom: hudSettings.flashbangPos.y, left: hudSettings.flashbangPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity }}
+                    style={{ bottom: hudSettings.flashbangPos.y, left: hudSettings.flashbangPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('flashbangPos')})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity }}
                   >
                      <Sun size={24} className="text-white" />
                      <span className="text-[10px] font-black text-white">{stats.flashbangs}</span>
@@ -7283,7 +7290,7 @@ const App: React.FC = () => {
                     onTouchStart={throwKingRobbo} 
                     onMouseDown={throwKingRobbo} 
                     className="absolute z-30 pointer-events-auto w-16 h-16 bg-red-900/80 active:bg-red-700 rounded-full flex flex-col items-center justify-center border-2 border-white/20 shadow-xl active:scale-90 transition-all backdrop-blur-md"
-                    style={{ bottom: hudSettings.kingRobboPos.y, left: hudSettings.kingRobboPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity }}
+                    style={{ bottom: hudSettings.kingRobboPos.y, left: hudSettings.kingRobboPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('kingRobboPos')})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity }}
                   >
                      <BoxIcon size={24} className="text-white" />
                      <span className="text-[10px] font-black text-white">{stats.kingRobbos}</span>
@@ -7305,7 +7312,7 @@ const App: React.FC = () => {
                          }
                     }}
                     className={`absolute z-30 pointer-events-auto w-16 h-16 rounded-full flex flex-col items-center justify-center border-2 border-white/20 shadow-xl active:scale-90 transition-all backdrop-blur-md ${stats.finisherCharge >= 100 ? 'bg-red-900/80' : 'bg-gray-800/80 opacity-50'}`}
-                    style={{ bottom: hudSettings.finisherPos.y, left: hudSettings.finisherPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity * (stats.finisherCharge >= 100 ? 1 : 0.5) }}
+                    style={{ bottom: hudSettings.finisherPos.y, left: hudSettings.finisherPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('finisherPos')})`, transformOrigin: 'bottom left', opacity: hudVis.buttonOpacity * (stats.finisherCharge >= 100 ? 1 : 0.5) }}
                   >
                      <Skull size={24} className="text-white" />
                      <span className="text-[10px] font-black text-white">{Math.min(100, Math.floor(stats.finisherCharge || 0))}%</span>
@@ -7319,7 +7326,7 @@ const App: React.FC = () => {
                 hudVis.gems && (
                 <div 
                   className="absolute z-30 pointer-events-none flex items-center gap-2 bg-purple-900/80 px-4 py-2 rounded-full border border-purple-500/50 backdrop-blur-md shadow-lg"
-                  style={{ top: hudSettings.gemPos?.y || 15, left: hudSettings.gemPos?.x || 50, transform: `scale(${hudSettings.hudScale})`, opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
+                  style={{ top: hudSettings.gemPos?.y || 15, left: hudSettings.gemPos?.x || 50, transform: `scale(${hudSettings.hudScale * hudSize('gemPos')})`, opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
                 >
                    <div className="w-6 h-6 bg-purple-500 rounded-full shadow-[0_0_10px_#a855f7] animate-pulse" />
                    <span className="text-white font-black italic text-2xl tracking-widest drop-shadow-md">{stats.gems || 0}</span>
@@ -7375,7 +7382,7 @@ const App: React.FC = () => {
                 hudVis.ammo && (
                 <div 
                   className="absolute z-30 pointer-events-auto text-white text-5xl font-black italic tracking-tighter drop-shadow-2xl text-right w-48"
-                  style={{ bottom: hudSettings.ammoPos.y, right: hudSettings.ammoPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
+                  style={{ bottom: hudSettings.ammoPos.y, right: hudSettings.ammoPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('ammoPos')})`, transformOrigin: 'bottom right', opacity: hudInfoOpacity, transition: 'opacity 0.5s ease' }}
                 >
                     {isReloading ? <span className="text-blue-500 text-xl animate-pulse block">RELOADING</span> : (
                       () => {
@@ -7401,7 +7408,7 @@ const App: React.FC = () => {
                 <button 
                   onTouchStart={(e) => { e.stopPropagation(); handleJumpOrSlide(); }}
                   className="absolute z-40 pointer-events-auto w-20 h-20 bg-emerald-700/80 active:bg-emerald-500 rounded-full flex flex-col items-center justify-center border-4 border-white/40 shadow-xl active:scale-95 transition-all backdrop-blur-md"
-                  style={{ bottom: hudSettings.jumpPos.y, right: hudSettings.jumpPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
+                  style={{ bottom: hudSettings.jumpPos.y, right: hudSettings.jumpPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('jumpPos')})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
                 >
                   {isSprinting ? <SlideIcon className="text-white w-8 h-8" /> : <ArrowUp className="text-white w-8 h-8" />}
                   <span className="text-[8px] font-black text-white mt-1 uppercase tracking-widest">{isSprinting ? 'Slide' : 'Jump'}</span>
@@ -7415,7 +7422,7 @@ const App: React.FC = () => {
                   onTouchStart={(e) => { e.stopPropagation(); switchWeapon(); }} 
                   disabled={!stats.secondaryWeaponName}
                   className={`absolute z-40 pointer-events-auto w-20 h-20 ${stats.secondaryWeaponName ? 'bg-indigo-700/80 active:bg-indigo-500' : 'bg-gray-800/40 opacity-50'} rounded-full flex flex-col items-center justify-center border-4 border-white/40 shadow-xl active:scale-95 transition-all backdrop-blur-md`}
-                  style={{ bottom: hudSettings.switchPos.y, right: hudSettings.switchPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity * (stats.secondaryWeaponName ? 1 : 0.5) }}
+                  style={{ bottom: hudSettings.switchPos.y, right: hudSettings.switchPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('switchPos')})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity * (stats.secondaryWeaponName ? 1 : 0.5) }}
                 >
                   <RefreshCw className="text-white w-8 h-8" />
                   <span className="text-[8px] font-black text-white mt-1 uppercase tracking-widest">Switch</span>
@@ -7429,7 +7436,7 @@ const App: React.FC = () => {
                   onTouchStart={(e) => { e.stopPropagation(); knifeRequest.current = true; }} 
                   onTouchEnd={(e) => { e.stopPropagation(); knifeRequest.current = false; }} 
                   className="absolute z-40 pointer-events-auto w-20 h-20 bg-orange-700/80 active:bg-orange-500 rounded-full flex items-center justify-center border-4 border-white/40 shadow-xl active:scale-95 transition-all backdrop-blur-md"
-                  style={{ bottom: hudSettings.knifePos.y, right: hudSettings.knifePos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
+                  style={{ bottom: hudSettings.knifePos.y, right: hudSettings.knifePos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('knifePos')})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
                 >
                   <Swords className="text-white w-10 h-10" />
                 </button>
@@ -7440,7 +7447,7 @@ const App: React.FC = () => {
                 hudVis.shoot && (
                 <button 
                   className={`fire-btn absolute z-40 pointer-events-auto w-28 h-28 ${customGameConfig.gameMode === 'dead_ops' ? 'hidden' : 'bg-red-700/80 active:bg-red-500'} rounded-full flex items-center justify-center border-4 border-white/40 shadow-[0_0_40px_rgba(185,28,28,0.4)] active:scale-95 transition-all backdrop-blur-md touch-none`}
-                  style={{ bottom: hudSettings.shootPos.y, right: hudSettings.shootPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
+                  style={{ bottom: hudSettings.shootPos.y, right: hudSettings.shootPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('shootPos')})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
                   onTouchStart={() => { phoneShootRequest.current = true; }}
                   onTouchEnd={() => { phoneShootRequest.current = false; }}
                 >
@@ -7455,7 +7462,7 @@ const App: React.FC = () => {
                   onTouchStart={(e) => { e.stopPropagation(); slideRequest.current = true; setIsSprinting(true); }}
                   onTouchEnd={(e) => { e.stopPropagation(); slideRequest.current = false; setIsSprinting(false); }}
                   className="absolute z-40 pointer-events-auto w-20 h-20 bg-blue-700/80 active:bg-blue-500 rounded-full flex flex-col items-center justify-center border-4 border-white/40 shadow-xl active:scale-95 transition-all backdrop-blur-md"
-                  style={{ bottom: hudSettings.slidePos?.y || hudSettings.shootPos.y, right: hudSettings.slidePos?.x || hudSettings.shootPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
+                  style={{ bottom: hudSettings.slidePos?.y || hudSettings.shootPos.y, right: hudSettings.slidePos?.x || hudSettings.shootPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('slidePos')})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
                 >
                   <SlideIcon className="text-white w-8 h-8" />
                   <span className="text-[8px] font-black text-white mt-1 uppercase tracking-widest">Slide</span>
@@ -7468,7 +7475,7 @@ const App: React.FC = () => {
                 <button 
                   onTouchStart={(e) => { e.stopPropagation(); handleReload(); }} 
                   className="absolute z-40 pointer-events-auto w-16 h-16 bg-blue-700/80 active:bg-blue-500 rounded-full flex items-center justify-center border-4 border-white/40 shadow-xl active:scale-90 transition-all backdrop-blur-md"
-                  style={{ bottom: hudSettings.reloadPos.y, right: hudSettings.reloadPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
+                  style={{ bottom: hudSettings.reloadPos.y, right: hudSettings.reloadPos.x, transform: `scale(${hudSettings.buttonScale * hudSettings.hudScale * hudSize('reloadPos')})`, transformOrigin: 'bottom right', opacity: hudVis.buttonOpacity }}
                 >
                   <RefreshCw className="text-white w-8 h-8" />
                 </button>
@@ -10016,6 +10023,20 @@ const App: React.FC = () => {
                       />
                     </div>
 
+                    <div className="bg-gradient-to-r from-cyan-950/60 to-zinc-900 border border-cyan-500/40 rounded-sm p-3 space-y-2">
+                      <div className="text-white font-black uppercase text-xs tracking-widest">Move &amp; Resize With Fingers</div>
+                      <p className="text-[11px] text-white/60 leading-snug">
+                        Drag buttons and info around the screen and resize them with your fingers, with a live preview. The number boxes below still work the same.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setShowHudEditor(true)}
+                        className="w-full py-3 bg-cyan-600 hover:bg-cyan-500 text-white font-black uppercase tracking-widest text-xs rounded-sm active:scale-95 transition-all"
+                      >
+                        ✋ Open Layout Editor
+                      </button>
+                    </div>
+
                     <div className="grid grid-cols-2 gap-6">
                       {[
                         { key: 'statsPos', label: 'Stats (Top/Left)' },
@@ -11385,6 +11406,20 @@ const App: React.FC = () => {
                             <p className="text-xs text-white/70 max-w-xl">
                               Build and place buildings (Bank, Bar, Diner, Hospital, Barn), walls, perk machines, mystery box, weapon wallbuys, streetlights, and an escape door. Works easily on phone, PC, TV, or controller!
                             </p>
+                            <div className="flex items-center gap-2 pt-1">
+                              <span className="text-[10px] font-bold text-white/50 uppercase shrink-0">My maps</span>
+                              <select
+                                value={customMapData.id}
+                                onChange={(e) => {
+                                  const picked = savedCustomMaps.find(m => m.id === e.target.value);
+                                  if (picked) { setCustomMapData(floorMapObjects(picked)); setActiveCustomMapId(picked.id); }
+                                }}
+                                className="flex-1 min-w-0 max-w-xs bg-zinc-900 border border-fuchsia-500/40 text-white text-xs font-bold rounded-sm px-2 py-1.5"
+                              >
+                                {!savedCustomMaps.some(m => m.id === customMapData.id) && <option value={customMapData.id}>{customMapData.name}</option>}
+                                {savedCustomMaps.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                              </select>
+                            </div>
                           </div>
 
                           <button
@@ -12723,6 +12758,35 @@ const App: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {showHudEditor && (
+        <HudLayoutEditor
+          settings={hudSettings}
+          defaults={INITIAL_HUD_SETTINGS}
+          hidden={{
+            statsPos: !(hudVis.round || hudVis.zombies || hudVis.points || hudVis.level || hudVis.timer || hudVis.perks || hudVis.powerups),
+            healthBarPos: !hudVis.health,
+            weaponPos: !hudVis.weapon,
+            ammoPos: !hudVis.ammo,
+            joystickPos: !hudVis.joystick,
+            grenadePos: !hudVis.grenade,
+            flashbangPos: !hudVis.flashbang,
+            kingRobboPos: !hudVis.kingRobbo,
+            finisherPos: !hudVis.finisher,
+            jumpPos: !hudVis.jump,
+            slidePos: !hudVis.jump,
+            switchPos: !hudVis.switchWeapon,
+            knifePos: !hudVis.knife,
+            shootPos: !hudVis.shoot,
+            reloadPos: !hudVis.reload,
+            minimapPos: !(hudSettings.minimapVisible ?? true),
+            gemPos: !hudVis.gems,
+            bossHealthPos: !hudVis.bossBar,
+          } as Partial<Record<HudPosKey, boolean>>}
+          onSave={(next) => { setHudSettings(next); setShowHudEditor(false); }}
+          onCancel={() => setShowHudEditor(false)}
+        />
       )}
 
       {showMapBuilder && (

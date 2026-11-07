@@ -28,6 +28,54 @@ const getEnv = (gl: THREE.WebGLRenderer) => {
   return sharedEnv;
 };
 
+// Big textures are what actually fill up a phone's memory: one 4096x4096 texture is about 90 MB on the GPU, and
+// a Meshy model has three of them. Every GLB is shrunk once, right after it loads (before it is first drawn), so
+// a map with lots of different models no longer crashes the page. Phones get 1024, computers 2048.
+const shrunkScenes = new WeakSet<object>();
+const maxTextureSize = () => {
+  const touch = typeof window !== 'undefined' && ('ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0);
+  return touch ? 1024 : 2048;
+};
+const TEXTURE_SLOTS = ['map', 'normalMap', 'metalnessMap', 'roughnessMap', 'aoMap', 'emissiveMap', 'bumpMap', 'alphaMap', 'lightMap', 'displacementMap'];
+export const shrinkSceneTextures = (scene: THREE.Object3D) => {
+  if (!scene || shrunkScenes.has(scene)) return;
+  shrunkScenes.add(scene);
+  try {
+    const max = maxTextureSize();
+    const textures = new Set<THREE.Texture>();
+    scene.traverse((o: any) => {
+      if (!o.isMesh) return;
+      (Array.isArray(o.material) ? o.material : [o.material]).forEach((m: any) => {
+        if (!m) return;
+        TEXTURE_SLOTS.forEach(k => { if (m[k] && m[k].isTexture) textures.add(m[k]); });
+      });
+    });
+    const smaller = new Map<any, HTMLCanvasElement>(); // original image -> shrunk copy (shared images are only shrunk once)
+    textures.forEach((tex: any) => {
+      const img = tex.image;
+      if (!img || tex.isDataTexture || tex.isCompressedTexture) return;
+      const w = img.width || img.videoWidth;
+      const h = img.height || img.videoHeight;
+      if (!w || !h || Math.max(w, h) <= max) return;
+      let small = smaller.get(img);
+      if (!small) {
+        const k = max / Math.max(w, h);
+        small = document.createElement('canvas');
+        small.width = Math.max(1, Math.round(w * k));
+        small.height = Math.max(1, Math.round(h * k));
+        const ctx = small.getContext('2d');
+        if (!ctx) return;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, small.width, small.height);
+        smaller.set(img, small);
+      }
+      tex.image = small;
+      tex.needsUpdate = true;
+    });
+    smaller.forEach((_c, img) => { try { img.close?.(); } catch { /* not an ImageBitmap */ } });
+  } catch (e) { console.warn('Could not shrink model textures', e); }
+};
+
 // Rebuilds a geometry with plain Float32 attributes (positions, normals, UVs...).
 //
 // The vertex-animation rigs (CustomModelZombie in Scene.tsx, PosedGLBBody below) edit vertex positions in place,
@@ -75,6 +123,7 @@ export const GLBProp: React.FC<{
   cutouts?: Cutout[];
 }> = ({ url, size, mode = 'stretch', anchor = 'center', cutouts }) => {
   const { scene } = useGLTF(resolveModelUrl(url)) as any;
+  shrinkSceneTextures(scene);
   const { gl } = useThree();
   const wrapper = useRef<THREE.Group>(null);
   const cuts = cutouts ?? MODEL_DEFAULTS[url]?.cutouts;
@@ -227,6 +276,7 @@ const POSE_FORWARD = 1.0;  // how far they swing forward to hold the gun (rad)
 
 const PosedGLBBody: React.FC<{ url: string; height: number; renderWeapon?: () => React.ReactNode; isMoving: React.MutableRefObject<boolean>; isShooting: React.MutableRefObject<boolean> }> = ({ url, height, renderWeapon, isMoving, isShooting }) => {
   const { scene } = useGLTF(resolveModelUrl(url)) as any;
+  shrinkSceneTextures(scene);
   const { gl } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const gunRef = useRef<THREE.Group>(null);
