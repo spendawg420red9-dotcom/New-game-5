@@ -2,6 +2,7 @@ import express from "express";
 import { Server } from "socket.io";
 import http from "http";
 import path from "path";
+import fs from "fs";
 import Stripe from 'stripe';
 import { GoogleGenAI, Modality } from "@google/genai";
 import { SEED_COMMUNITY_MAPS } from "./customMapUtils";
@@ -23,7 +24,7 @@ async function startServer() {
   });
   const PORT = parseInt(process.env.PORT || "3000", 10);
 
-  app.use(express.json());
+  app.use(express.json({ limit: "25mb" }));
 
   // Gemini AI Client
   let genAIClient: GoogleGenAI | null = null;
@@ -109,11 +110,28 @@ async function startServer() {
     hudSettings?: any;
   }> = {};
 
-  const leaderboards = {
-    world: [] as any[],
+  // Scores and shared maps are kept in a file so they survive restarts (needs a host with a disk; set DATA_DIR to a persistent folder)
+  const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
+  const readJson = (name: string, fallback: any) => {
+    try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, name), 'utf8')); } catch { return fallback; }
+  };
+  let saveTimer: any = null;
+  const persist = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+        fs.writeFileSync(path.join(DATA_DIR, 'leaderboard.json'), JSON.stringify(leaderboards.world));
+        fs.writeFileSync(path.join(DATA_DIR, 'community-maps.json'), JSON.stringify(communityMaps));
+      } catch (e) { console.warn('Could not save data', e); }
+    }, 1500);
   };
 
-  let communityMaps: any[] = [...SEED_COMMUNITY_MAPS];
+  const leaderboards = {
+    world: readJson('leaderboard.json', []) as any[],
+  };
+
+  let communityMaps: any[] = readJson('community-maps.json', null) || [...SEED_COMMUNITY_MAPS];
 
   // Device & User Registry for Tracking Activity & Inviting each other
   const devices: Record<string, {
@@ -373,6 +391,7 @@ async function startServer() {
       if (leaderboards.world.length > 100) {
         leaderboards.world = leaderboards.world.slice(0, 100);
       }
+      persist();
       io.emit("leaderboard_updated", leaderboards.world);
     });
 
@@ -402,14 +421,14 @@ async function startServer() {
           highScores: data.highScores || [],
         };
         communityMaps = [newEntry, ...communityMaps.filter(m => m.id !== newEntry.id)];
-        io.emit("community_maps_updated", communityMaps);
+        persist(); io.emit("community_maps_updated", communityMaps);
         socket.emit("publish_community_map_success", newEntry);
       }
     });
 
     socket.on("like_community_map", (mapId) => {
       communityMaps = communityMaps.map(m => m.id === mapId ? { ...m, likes: (m.likes || 0) + 1 } : m);
-      io.emit("community_maps_updated", communityMaps);
+      persist(); io.emit("community_maps_updated", communityMaps);
     });
 
     socket.on("submit_community_score", (data) => {
@@ -431,7 +450,7 @@ async function startServer() {
           }
           return m;
         });
-        io.emit("community_maps_updated", communityMaps);
+        persist(); io.emit("community_maps_updated", communityMaps);
       }
     });
 
@@ -715,14 +734,14 @@ async function startServer() {
       highScores: data.highScores || [],
     };
     communityMaps = [newEntry, ...communityMaps.filter(m => m.id !== newEntry.id)];
-    io.emit("community_maps_updated", communityMaps);
+    persist(); io.emit("community_maps_updated", communityMaps);
     res.json({ success: true, map: newEntry });
   });
 
   app.post("/api/community-maps/like", (req, res) => {
     const { mapId } = req.body;
     communityMaps = communityMaps.map(m => m.id === mapId ? { ...m, likes: (m.likes || 0) + 1 } : m);
-    io.emit("community_maps_updated", communityMaps);
+    persist(); io.emit("community_maps_updated", communityMaps);
     res.json({ success: true });
   });
 
@@ -746,7 +765,7 @@ async function startServer() {
         }
         return m;
       });
-      io.emit("community_maps_updated", communityMaps);
+      persist(); io.emit("community_maps_updated", communityMaps);
     }
     res.json({ success: true });
   });

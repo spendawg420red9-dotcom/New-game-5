@@ -3,6 +3,25 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { MapObject } from '../types';
 import { stairCount, NO_FLOOR } from '../terrain';
+import { getProcTexture, isProcTexture, procName } from '../proceduralTextures';
+
+// One texture tile covers this many metres. Geometry UVs are in tiles, so every piece shares ONE GPU texture per look.
+const TILE = 6;
+const scaleUV = (g: THREE.BufferGeometry, k: number) => {
+  const uv = g.getAttribute('uv') as THREE.BufferAttribute | undefined;
+  if (!uv) return g;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * k, uv.getY(i) * k);
+  uv.needsUpdate = true;
+  return g;
+};
+// BoxGeometry faces are px, nx, py, ny, pz, nz (4 vertices each): stretch each face's UV to its real size in metres
+const boxUV = (g: THREE.BoxGeometry, w: number, h: number, d: number) => {
+  const uv = g.getAttribute('uv') as THREE.BufferAttribute;
+  const dims: [number, number][] = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
+  for (let f = 0; f < 6; f++) for (let v = 0; v < 4; v++) { const i = f * 4 + v; uv.setXY(i, (uv.getX(i) * dims[f][0]) / TILE, (uv.getY(i) * dims[f][1]) / TILE); }
+  uv.needsUpdate = true;
+  return g;
+};
 
 // Drawing of the terrain pieces (platform, ramp, stairs, hill, pit). Used by the game and by the map builder,
 // so what you build is exactly what you play on.
@@ -36,7 +55,7 @@ const rampGeometry = (w: number, h: number, d: number) => remember(`ramp:${r2(w)
   g.rotateY(-Math.PI / 2);
   g.translate(w / 2, 0, 0);
   g.computeVertexNormals();
-  return g;
+  return scaleUV(g, 1 / TILE);
 });
 
 const stairsGeometry = (w: number, h: number, d: number) => remember(`stairs:${r2(w)}:${r2(h)}:${r2(d)}`, () => {
@@ -44,7 +63,7 @@ const stairsGeometry = (w: number, h: number, d: number) => remember(`stairs:${r
   const parts: THREE.BufferGeometry[] = [];
   for (let k = 0; k < n; k++) {
     const stepTop = (h * (k + 1)) / n;          // height of this step above the bottom
-    const g = new THREE.BoxGeometry(w, stepTop, d / n);
+    const g = boxUV(new THREE.BoxGeometry(w, stepTop, d / n), w, stepTop, d / n);
     g.translate(0, -h / 2 + stepTop / 2, -d / 2 + (d * (k + 0.5)) / n);
     parts.push(g);
   }
@@ -58,6 +77,7 @@ const hillGeometry = (w: number, h: number, d: number) => remember(`hill:${r2(w)
   const rings = Math.max(8, Math.min(22, Math.round(Math.max(w, d) / 4)));
   const segs = Math.max(20, Math.min(56, rings * 3));
   const pos: number[] = [0, h / 2, 0];
+  const uvs: number[] = [0, 0];
   for (let i = 1; i <= rings; i++) {
     const r = i / rings;
     const k = 1 - r * r;
@@ -65,6 +85,7 @@ const hillGeometry = (w: number, h: number, d: number) => remember(`hill:${r2(w)
     for (let j = 0; j < segs; j++) {
       const a = (j / segs) * Math.PI * 2;
       pos.push(Math.cos(a) * r * (w / 2), y, Math.sin(a) * r * (d / 2));
+      uvs.push((Math.cos(a) * r * (w / 2)) / TILE, (Math.sin(a) * r * (d / 2)) / TILE);
     }
   }
   const idx: number[] = [];
@@ -79,12 +100,23 @@ const hillGeometry = (w: number, h: number, d: number) => remember(`hill:${r2(w)
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   g.setIndex(idx);
   g.computeVertexNormals();
   return g;
 });
 
-const boxGeometry = (w: number, h: number, d: number) => remember(`box:${r2(w)}:${r2(h)}:${r2(d)}`, () => new THREE.BoxGeometry(w, h, d));
+const ladderGeometry = (w: number, h: number, d: number) => remember(`ladder:${r2(w)}:${r2(h)}:${r2(d)}`, () => {
+  const parts: THREE.BufferGeometry[] = [];
+  for (const sx of [-1, 1]) { const g = new THREE.BoxGeometry(0.09, h, d); g.translate(sx * (w / 2 - 0.05), 0, 0); parts.push(g); }
+  const rungs = Math.max(2, Math.floor(h / 0.35));
+  for (let i = 0; i < rungs; i++) { const g = new THREE.BoxGeometry(w - 0.1, 0.06, d * 0.7); g.translate(0, -h / 2 + 0.2 + i * ((h - 0.3) / Math.max(1, rungs - 1)), 0); parts.push(g); }
+  const merged = mergeGeometries(parts, false) || parts[0];
+  parts.forEach(p => { if (p !== merged) p.dispose(); });
+  return merged;
+});
+
+const boxGeometry = (w: number, h: number, d: number) => remember(`box:${r2(w)}:${r2(h)}:${r2(d)}`, () => boxUV(new THREE.BoxGeometry(w, h, d), w, h, d));
 
 export const TerrainObject = React.memo(({ obj, selected, onClick }: {
   obj: MapObject;
@@ -93,14 +125,16 @@ export const TerrainObject = React.memo(({ obj, selected, onClick }: {
 }) => {
   const [w, h, d] = obj.args || [8, 1, 8];
   const color = obj.color || (obj.type === 'hill' ? '#4d7c0f' : obj.type === 'pit' ? '#3f3f46' : '#71717a');
+  const proc = isProcTexture(obj.texture) ? procName(obj.texture) : null;
   const mat = useMemo(() => new THREE.MeshStandardMaterial({
-    color,
+    color: proc ? (obj.color || '#ffffff') : color,
+    map: proc ? getProcTexture(proc) : null,
     roughness: obj.roughness ?? 0.9,
     metalness: obj.metalness ?? 0.05,
     emissive: obj.emissive ? new THREE.Color(obj.emissive) : new THREE.Color('#000000'),
     emissiveIntensity: obj.emissive ? (obj.emissiveIntensity ?? 1) : 0,
     side: obj.type === 'hill' ? THREE.DoubleSide : THREE.FrontSide,
-  }), [color, obj.roughness, obj.metalness, obj.emissive, obj.emissiveIntensity, obj.type]);
+  }), [color, proc, obj.roughness, obj.metalness, obj.emissive, obj.emissiveIntensity, obj.type]);
   React.useEffect(() => () => mat.dispose(), [mat]);
 
   // A pit is always drawn from the floor line down (its centre is half the depth below ground)
@@ -116,6 +150,8 @@ export const TerrainObject = React.memo(({ obj, selected, onClick }: {
     body = <mesh geometry={stairsGeometry(w, h, d)} material={mat} />;
   } else if (obj.type === 'hill') {
     body = <mesh geometry={hillGeometry(w, h, d)} material={mat} />;
+  } else if (obj.type === 'ladder') {
+    body = <mesh geometry={ladderGeometry(w, h, d)} material={mat} />;
   } else if (obj.type === 'pit') {
     // The pit object is centred on its middle: pos.y = -depth/2. Floor, then four walls that line the hole in the ground.
     const t = 0.6;

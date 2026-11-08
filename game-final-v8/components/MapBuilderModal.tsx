@@ -12,6 +12,7 @@ import {
 import { MapConfig, MapObject, InteractableConfig, CustomZombieConfig, CommunityMapEntry, ZombieMixEntry } from '../types';
 import { GLBProp, GLBBoundary } from './GLBProp';
 import { MODEL_DEFAULTS } from '../modelDefaults';
+import { forEachGlbInZip } from '../zipImport';
 import {
   UserModel, listUserModels, addUserModels, removeUserModels, moveUserModels, subscribeUserModels,
   listModelFolders, addModelFolder, removeModelFolder, DEFAULT_MODEL_FOLDERS, UNSORTED
@@ -27,6 +28,7 @@ import {
 } from '../customMapUtils';
 import { buildTerrain, isTerrainType, mapHalfSize, MAP_SIZE_PRESETS } from '../terrain';
 import { TerrainObject, useFloorGeometry } from './TerrainPieces';
+import { PROC_TEXTURES, procPreview, isProcTexture, procName, getProcTexture } from '../proceduralTextures';
 
 interface MapBuilderModalProps {
   initialMap: MapConfig;
@@ -48,6 +50,7 @@ interface Builder3DSceneProps {
   hoverCoord: { x: number; z: number } | null;
   setHoverCoord: (coord: { x: number; z: number } | null) => void;
   camPreset: 'iso' | 'top' | 'close' | 'ground';
+  camCmd?: { n: number; kind: 'pan' | 'zoom' | 'center'; x?: number; z?: number; f?: number };
 }
 
 // Colour picker that waits until you stop dragging before it saves, so undo history is not flooded
@@ -78,24 +81,33 @@ const Builder3DScene: React.FC<Builder3DSceneProps> = ({
   onPlaceAssetAt,
   hoverCoord,
   setHoverCoord,
-  camPreset
+  camPreset,
+  camCmd
 }) => {
   const controlsRef = useRef<any>(null);
   // Map size, pits (holes in the floor) and the no-floor option
   const half = mapConfig.mapSize || 150;
   const terrainNow = useMemo(() => buildTerrain(mapConfig), [mapConfig]);
   const floorGeo = useFloorGeometry(half, terrainNow.pits);
+  const floorProc = isProcTexture(mapConfig.floorTexture) ? procName(mapConfig.floorTexture) : null;
+  const floorMap = useMemo(() => {
+    if (!floorProc) return null;
+    const t = getProcTexture(floorProc).clone(); t.needsUpdate = true;
+    const tile = Math.max(1, mapConfig.floorTile || 10); t.repeat.set(1 / tile, 1 / tile);
+    return t;
+  }, [floorProc, mapConfig.floorTile]);
   const voidFloor = mapConfig.floorMode === 'none';
 
   // Handle camera presets
   useEffect(() => {
     if (!controlsRef.current) return;
     const ctrl = controlsRef.current;
+    const k = Math.max(1, half / 150);
     if (camPreset === 'iso') {
-      ctrl.object.position.set(40, 50, 60);
+      ctrl.object.position.set(40 * k, 50 * k, 60 * k);
       ctrl.target.set(0, 0, 0);
     } else if (camPreset === 'top') {
-      ctrl.object.position.set(0, 110, 0.01);
+      ctrl.object.position.set(0, 110 * k, 0.01);
       ctrl.target.set(0, 0, 0);
     } else if (camPreset === 'close') {
       ctrl.object.position.set(15, 12, 20);
@@ -107,9 +119,45 @@ const Builder3DScene: React.FC<Builder3DSceneProps> = ({
     ctrl.update();
   }, [camPreset]);
 
+  // Move pad buttons: slide the view, zoom, or go back to the middle
+  useEffect(() => {
+    if (!camCmd || !controlsRef.current) return;
+    const ctrl = controlsRef.current;
+    const cam = ctrl.object;
+    if (camCmd.kind === 'pan') {
+      const dist = cam.position.distanceTo(ctrl.target);
+      const step = Math.max(4, dist * 0.22);
+      // forward/right on the ground, relative to where the camera looks
+      const fx = ctrl.target.x - cam.position.x, fz = ctrl.target.z - cam.position.z;
+      const fl = Math.hypot(fx, fz) || 1;
+      const fwd = { x: fx / fl, z: fz / fl };
+      const right = { x: -fwd.z, z: fwd.x };
+      const dx = (right.x * (camCmd.x || 0) + fwd.x * (camCmd.z || 0)) * step;
+      const dz = (right.z * (camCmd.x || 0) + fwd.z * (camCmd.z || 0)) * step;
+      const lim = half + 20;
+      const nx = Math.max(-lim, Math.min(lim, ctrl.target.x + dx)) - ctrl.target.x;
+      const nz = Math.max(-lim, Math.min(lim, ctrl.target.z + dz)) - ctrl.target.z;
+      cam.position.x += nx; cam.position.z += nz;
+      ctrl.target.x += nx; ctrl.target.z += nz;
+    } else if (camCmd.kind === 'zoom') {
+      const dir = cam.position.clone().sub(ctrl.target);
+      const f = camCmd.f || 1;
+      const len = Math.min(Math.max(dir.length() * f, 5), Math.max(250, half * 2.2));
+      dir.setLength(len);
+      cam.position.copy(ctrl.target).add(dir);
+    } else {
+      const dir = cam.position.clone().sub(ctrl.target);
+      ctrl.target.set(0, 0, 0);
+      cam.position.copy(dir);
+    }
+    ctrl.update();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camCmd?.n]);
+
   // Raycast to floor for placement
   const handleFloorClick = (e: any) => {
     e.stopPropagation();
+    if (e.delta > 6) return; // that was a drag to turn the view, not a tap
     if (e.point) {
       const snapX = Math.round(e.point.x);
       const snapZ = Math.round(e.point.z);
@@ -133,7 +181,12 @@ const Builder3DScene: React.FC<Builder3DSceneProps> = ({
         ref={controlsRef} 
         makeDefault 
         maxPolarAngle={Math.PI / 2 - 0.02} 
-        minDistance={5} 
+        enableDamping
+        dampingFactor={0.12}
+        panSpeed={1.4}
+        zoomSpeed={1.2}
+        screenSpacePanning
+        minDistance={3} 
         maxDistance={Math.max(250, half * 2.2)} 
       />
 
@@ -157,7 +210,7 @@ const Builder3DScene: React.FC<Builder3DSceneProps> = ({
           onPointerMove={handleFloorPointerMove}
           onPointerOut={() => setHoverCoord(null)}
         >
-          <meshStandardMaterial color={mapConfig.floorColor || '#1c1d21'} roughness={mapConfig.floorRoughness ?? 0.8} />
+          <meshStandardMaterial color={mapConfig.floorColor || '#1c1d21'} map={floorMap} roughness={mapConfig.floorRoughness ?? 0.8} />
         </mesh>
       ) : null}
 
@@ -225,7 +278,7 @@ const Builder3DScene: React.FC<Builder3DSceneProps> = ({
               <TerrainObject
                 obj={obj}
                 selected={isSelected}
-                onClick={(e: any) => { e.stopPropagation(); onSelectItem({ type: 'object', index: idx }); }}
+                onClick={(e: any) => { e.stopPropagation(); if (e.delta > 6) return; onSelectItem({ type: 'object', index: idx }); }}
               />
               {obj.type === 'pit' && (
                 // clicks on the pit floor place things down there instead of selecting the pit
@@ -739,6 +792,15 @@ const Builder3DScene: React.FC<Builder3DSceneProps> = ({
         );
       })}
 
+      {/* Dragon heart spots */}
+      {(mapConfig.heartSpots || []).map((hp, hi) => (
+        <group key={'heart' + hi} position={hp}>
+          <Cylinder args={[0.5, 0.5, 0.1, 16]} position={[0, -1.45, 0]}><meshBasicMaterial color="#ef4444" /></Cylinder>
+          <Text position={[0, 0.6, 0]} fontSize={0.35} color="#f87171" outlineWidth={0.02} outlineColor="#000">❤ HEART {hi + 1}</Text>
+          <mesh><sphereGeometry args={[0.4, 12, 12]} /><meshBasicMaterial color="#dc2626" /></mesh>
+        </group>
+      ))}
+
       {/* Crafting Table */}
       {mapConfig.craftingTablePos && !mapConfig.noCraftingTable && (
         <group 
@@ -852,6 +914,8 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
   // View Mode: 2D Tactical Grid or 3D Interactive Studio
   const [viewMode, setViewMode] = useState<'3d' | '2d'>('3d');
   const [camPreset, setCamPreset] = useState<'iso' | 'top' | 'close' | 'ground'>('iso');
+  const [camCmd, setCamCmd] = useState<{ n: number; kind: 'pan' | 'zoom' | 'center'; x?: number; z?: number; f?: number }>({ n: 0, kind: 'center' });
+  const sendCam = (c: Omit<typeof camCmd, 'n'>) => setCamCmd(p => ({ ...c, n: p.n + 1 }));
   const [hoverCoord, setHoverCoord] = useState<{ x: number; z: number } | null>(null);
 
   // Undo / Redo History
@@ -957,6 +1021,30 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
   // including ones that were already in My Models.
   const uploadModelFiles = async (files: File[], folder?: string): Promise<UserModel[]> => {
     if (files.length === 0) return [];
+    // .zip files: read them one .glb at a time so even a multi-GB zip never fills the phone's memory
+    const zips = files.filter(f => /\.zip$/i.test(f.name));
+    if (zips.length > 0) {
+      const addedAll: UserModel[] = [];
+      let total = 0; const problems: string[] = [];
+      for (const z of zips) {
+        try {
+          setUploadProgress({ done: 0, total: 1, name: `Reading ${z.name}...` });
+          const r = await forEachGlbInZip(z, async (g, i, n) => {
+            setUploadProgress({ done: i, total: n, name: g.name });
+            const res = await addUserModels([g], folder ?? uploadTarget);
+            addedAll.push(...res.added);
+            res.failed.forEach(f => problems.push(`${f.name}: ${f.reason}`));
+            if (res.unsaved.length) problems.push(`Not saved for next time (storage full?): ${res.unsaved.join(', ')}`);
+          });
+          total += r.done; problems.push(...r.errors);
+        } catch (err: any) { problems.push(`${z.name}: ${err?.message || err}`); }
+      }
+      setUploadProgress(null);
+      setUploadReport(problems);
+      showToast(`Zip: added ${addedAll.length} of ${total} models${problems.length ? ' - see the list for problems' : ''}`);
+      files = files.filter(f => !/\.zip$/i.test(f.name));
+      if (files.length === 0) return addedAll;
+    }
     const glbs = files.filter(f => /\.glb$/i.test(f.name));
     if (glbs.length === 0) { showToast('Please pick .glb files (export GLB from Meshy)'); return []; }
     setUploadReport([]);
@@ -1020,6 +1108,24 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
   const [isPanning, setIsPanning] = useState(false);
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const canvasRef = useRef<SVGSVGElement>(null);
+  // 2D view: drag to move, pinch / wheel / buttons to zoom. `dragged` stops a drag from also placing something.
+  const [svgSize, setSvgSize] = useState({ w: 360, h: 640 });
+  const ptrs = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchStart = useRef<{ d: number; z: number } | null>(null);
+  const dragged = useRef(false);
+  const downAt = useRef<{ x: number; y: number } | null>(null);
+  const clampZoom = (z: number) => Math.max(0.25, Math.min(24, z));
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const measure = () => { const r = el.getBoundingClientRect(); if (r.width > 0) setSvgSize(p => (Math.abs(p.w - r.width) < 1 && Math.abs(p.h - r.height) < 1) ? p : { w: r.width, h: r.height }); };
+    measure();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    window.addEventListener('resize', measure);
+    return () => { ro?.disconnect(); window.removeEventListener('resize', measure); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode]);
 
   // Modals & Panels
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -1120,6 +1226,16 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
         modelUrl: selectedAsset.type === 'perk' ? selectedAsset.modelUrl : undefined,
       };
 
+      if (selectedAsset.id === 'dragonHeart') {
+        const spots = [...(currentMap.heartSpots || [])];
+        const ySurf = Math.max(0, buildTerrain(currentMap).topAt(snapX, snapZ));
+        const spot: [number, number, number] = [snapX, ySurf + 1.5, snapZ];
+        if (spots.length >= 3) spots[2] = spot; else spots.push(spot);
+        pushHistory({ ...currentMap, heartSpots: spots });
+        showToast(`Heart ${Math.min(spots.length, 3)} of 3 placed`);
+        return;
+      }
+
       if (selectedAsset.id === 'craftingTable') {
         const nextMap = { ...currentMap, craftingTablePos: [snapX, 1.5, snapZ] as [number, number, number] };
         pushHistory(nextMap);
@@ -1168,7 +1284,9 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
     if (selectedAsset.type === 'object') {
       // On a map with terrain, new props sit on whatever is under the click (floor, pit floor, ...). Terrain pieces themselves keep their own height.
       const isTerrainAsset = !!selectedAsset.objectType && isTerrainType(selectedAsset.objectType);
-      const baseY = !isTerrainAsset && (currentMap.objects.some(o => isTerrainType(o.type)) || currentMap.floorMode === 'none')
+      // hills, ramps, stairs and ladders also sit on whatever is under them (so inside a pit they stand on the pit floor, not float at ground level)
+      const sitsOnSurface = !isTerrainAsset || ['hill', 'ramp', 'stairs', 'ladder'].includes(selectedAsset.objectType as string);
+      const baseY = sitsOnSurface && (currentMap.objects.some(o => isTerrainType(o.type)) || currentMap.floorMode === 'none')
         ? Math.max(-500, buildTerrain(currentMap).topAt(snapX, snapZ)) : 0;
       const newObj: MapObject = {
         type: selectedAsset.objectType || 'box',
@@ -1970,6 +2088,19 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
               <PickColor value={currentMap.skyColor || '#1e293b'} label="Sky colour" onCommit={(c) => pushHistory({ ...currentMap, skyColor: c })} />
               <PickColor value={currentMap.fogColor || '#1e293b'} label="Fog colour" onCommit={(c) => pushHistory({ ...currentMap, fogColor: c })} />
             </div>
+            {(currentMap.heartSpots?.length || 0) > 0 && (
+              <button onClick={() => pushHistory({ ...currentMap, heartSpots: [] })}
+                className="w-full py-1.5 text-[11px] font-black uppercase bg-red-900/60 hover:bg-red-800 rounded border border-red-400/40">Remove my {currentMap.heartSpots!.length} dragon heart spot(s)</button>
+            )}
+            <div className="text-[11px] font-bold text-white/70 uppercase">Floor textures</div>
+            <div className="flex flex-wrap gap-1.5">
+              {PROC_TEXTURES.map(t => (
+                <button key={t.id} title={t.name} onClick={() => pushHistory({ ...currentMap, floorTexture: 'proc:' + t.id, floorColor: '#ffffff' })}
+                  className={`w-12 rounded border overflow-hidden text-[9px] font-bold ${currentMap.floorTexture === 'proc:' + t.id ? 'border-emerald-300' : 'border-white/20'}`}>
+                  <img src={procPreview(t.id)} alt={t.name} className="w-full h-8 object-cover" />{t.name}
+                </button>
+              ))}
+            </div>
             <div className="flex gap-2">
               <button onClick={() => pushHistory({ ...currentMap, floorTexture: PLAIN_FLOOR_TEXTURE })}
                 className="flex-1 py-1.5 text-[11px] font-black uppercase bg-zinc-800 hover:bg-zinc-700 rounded border border-white/10">Plain colour (no texture)</button>
@@ -2131,6 +2262,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                     hoverCoord={hoverCoord}
                     setHoverCoord={setHoverCoord}
                     camPreset={camPreset}
+                    camCmd={camCmd}
                   />
                 </Suspense>
               </Canvas>
@@ -2166,6 +2298,19 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                 </div>
               </div>
 
+              {/* Move pad: slide the view around the map without fighting the touch controls */}
+              <div className="absolute bottom-16 right-4 z-20 grid grid-cols-3 gap-1 bg-zinc-900/80 backdrop-blur border border-white/10 p-1.5 rounded-lg shadow-xl select-none">
+                <button onClick={() => sendCam({ kind: 'zoom', f: 0.75 })} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black text-lg">＋</button>
+                <button onClick={() => sendCam({ kind: 'pan', x: 0, z: 1 })} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black">▲</button>
+                <button onClick={() => sendCam({ kind: 'zoom', f: 1.33 })} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black text-lg">－</button>
+                <button onClick={() => sendCam({ kind: 'pan', x: -1, z: 0 })} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black">◀</button>
+                <button onClick={() => sendCam({ kind: 'center' })} className="w-9 h-9 bg-purple-600 hover:bg-purple-500 rounded font-black text-[9px] uppercase">Mid</button>
+                <button onClick={() => sendCam({ kind: 'pan', x: 1, z: 0 })} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black">▶</button>
+                <div />
+                <button onClick={() => sendCam({ kind: 'pan', x: 0, z: -1 })} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black">▼</button>
+                <div />
+              </div>
+
               {/* Active Asset Stamp Reminder */}
               <div className="absolute top-4 right-4 z-20 flex items-center gap-2 bg-zinc-900/90 backdrop-blur border border-purple-500/40 py-2 px-3.5 rounded-full shadow-2xl">
                 <span className="text-base">{selectedAsset.icon}</span>
@@ -2194,9 +2339,49 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
           ) : (
             /* 2D Plan Grid */
             <div className="w-full h-full relative cursor-crosshair overflow-hidden touch-none flex items-center justify-center">
+              <div className="absolute bottom-16 right-4 z-20 grid grid-cols-3 gap-1 bg-zinc-900/80 backdrop-blur border border-white/10 p-1.5 rounded-lg shadow-xl select-none" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => setZoom(z => clampZoom(z * 1.3))} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black text-lg">＋</button>
+                <button onClick={() => setPanOffset(o => ({ ...o, y: o.y + 80 }))} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black">▲</button>
+                <button onClick={() => setZoom(z => clampZoom(z / 1.3))} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black text-lg">－</button>
+                <button onClick={() => setPanOffset(o => ({ ...o, x: o.x + 80 }))} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black">◀</button>
+                <button onClick={() => { setPanOffset({ x: 0, y: 0 }); setZoom(Math.max(0.25, Math.min(3.5, (Math.min(svgSize.w, svgSize.h) / 2 - 10) / (currentMap.mapSize || 150)))); }} className="w-9 h-9 bg-purple-600 hover:bg-purple-500 rounded font-black text-[9px] uppercase">Fit</button>
+                <button onClick={() => setPanOffset(o => ({ ...o, x: o.x - 80 }))} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black">▶</button>
+                <div />
+                <button onClick={() => setPanOffset(o => ({ ...o, y: o.y - 80 }))} className="w-9 h-9 bg-white/10 hover:bg-white/20 rounded font-black">▼</button>
+                <div />
+              </div>
               <svg
                 ref={canvasRef}
                 className="w-full h-full"
+                style={{ touchAction: 'none' }}
+                onPointerDown={(e) => {
+                  ptrs.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+                  downAt.current = { x: e.clientX, y: e.clientY };
+                  dragged.current = false;
+                  if (ptrs.current.size === 2) {
+                    const [a, b] = Array.from(ptrs.current.values());
+                    pinchStart.current = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, z: zoom };
+                  }
+                }}
+                onPointerMove={(e) => {
+                  const prev = ptrs.current.get(e.pointerId);
+                  if (!prev) return;
+                  const cur = { x: e.clientX, y: e.clientY };
+                  ptrs.current.set(e.pointerId, cur);
+                  if (ptrs.current.size === 2 && pinchStart.current) {
+                    const [a, b] = Array.from(ptrs.current.values());
+                    setZoom(clampZoom(pinchStart.current.z * (Math.hypot(a.x - b.x, a.y - b.y) / pinchStart.current.d)));
+                    dragged.current = true;
+                  } else if (ptrs.current.size === 1) {
+                    if (!dragged.current && downAt.current && Math.hypot(cur.x - downAt.current.x, cur.y - downAt.current.y) < 8) return;
+                    dragged.current = true;
+                    setPanOffset(o => ({ x: o.x + (cur.x - prev.x), y: o.y + (cur.y - prev.y) }));
+                  }
+                }}
+                onPointerUp={(e) => { ptrs.current.delete(e.pointerId); if (ptrs.current.size < 2) pinchStart.current = null; }}
+                onPointerCancel={(e) => { ptrs.current.delete(e.pointerId); pinchStart.current = null; }}
+                onWheel={(e) => { setZoom(z => clampZoom(z * (e.deltaY < 0 ? 1.12 : 0.89))); }}
+                onClickCapture={(e) => { if (dragged.current) { e.stopPropagation(); e.preventDefault(); dragged.current = false; } }}
                 onClick={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect();
                   const clickX = e.clientX - rect.left - (rect.width / 2 + panOffset.x);
@@ -2204,7 +2389,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                   placeAssetAt(clickX / zoom, clickZ / zoom);
                 }}
               >
-                <g transform={`translate(${window.innerWidth / 2 + panOffset.x}, ${window.innerHeight / 2 - 40 + panOffset.y})`}>
+                <g transform={`translate(${svgSize.w / 2 + panOffset.x}, ${svgSize.h / 2 + panOffset.y})`}>
                   {/* Floor */}
                   {(() => {
                     const H = currentMap.mapSize || 150;
@@ -2345,6 +2530,41 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                   {/* Paint */}
                   <PickColor value={currentMap.objects[selectedItem.index].color || '#71717a'} label="Paint"
                     onCommit={(c) => { const objs = [...currentMap.objects]; objs[selectedItem.index] = { ...objs[selectedItem.index], color: c }; pushHistory({ ...currentMap, objects: objs }); }} />
+                  {['box', 'wall'].includes(currentMap.objects[selectedItem.index].type) && (
+                    <label className="shrink-0 px-2 py-1 rounded bg-fuchsia-700 hover:bg-fuchsia-600 border border-white/20 text-[10px] font-black uppercase cursor-pointer">
+                      🖼 Image
+                      <input type="file" accept="image/*" className="hidden" onChange={(e) => {
+                        const f = e.target.files?.[0]; e.target.value = '';
+                        if (!f) return;
+                        const idx = selectedItem.index;
+                        const img = new Image();
+                        const url = URL.createObjectURL(f);
+                        img.onload = () => {
+                          const k = Math.min(1, 640 / Math.max(img.width, img.height));
+                          const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(img.width * k)); c.height = Math.max(1, Math.round(img.height * k));
+                          c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
+                          URL.revokeObjectURL(url);
+                          const data = c.toDataURL('image/jpeg', 0.82);
+                          const objs = [...currentMap.objects];
+                          if (!objs[idx]) return;
+                          objs[idx] = { ...objs[idx], texture: data, color: '#ffffff' };
+                          pushHistory({ ...currentMap, objects: objs });
+                          showToast('Image applied. Use a thin Poster piece on a wall');
+                        };
+                        img.onerror = () => { URL.revokeObjectURL(url); showToast('Could not read that image'); };
+                        img.src = url;
+                      }} />
+                    </label>
+                  )}
+                  {isTerrainType(currentMap.objects[selectedItem.index].type) && (
+                  <div className="flex items-center gap-1 max-w-[60vw] overflow-x-auto">
+                    <span className="text-[10px] font-bold text-white/60 uppercase">Surface</span>
+                    {PROC_TEXTURES.map(t => (
+                      <button key={t.id} title={t.name} onClick={() => { const objs = [...currentMap.objects]; objs[selectedItem.index] = { ...objs[selectedItem.index], texture: 'proc:' + t.id, color: '#ffffff' }; pushHistory({ ...currentMap, objects: objs }); }}
+                        className="w-7 h-7 shrink-0 rounded border border-white/30 overflow-hidden"><img src={procPreview(t.id)} alt={t.name} className="w-full h-full object-cover" /></button>
+                    ))}
+                  </div>
+                  )}
                   <div className="h-5 w-px bg-white/10" />
                   {/* Size */}
                   <div className="flex items-center gap-1">
@@ -2467,7 +2687,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                   )}
                   <label className="px-2 py-2 bg-purple-600/80 hover:bg-purple-500 text-white rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer" title="Pick a .glb from your phone and use it as this machine">
                     Use my model
-                    <input type="file" multiple accept=".glb,model/gltf-binary,application/octet-stream" className="hidden" onChange={async (e) => {
+                    <input type="file" multiple accept=".glb,.zip,model/gltf-binary,application/zip,application/octet-stream" className="hidden" onChange={async (e) => {
                       const files: File[] = e.target.files ? Array.from(e.target.files as ArrayLike<File>) : [];
                       e.target.value = '';
                       const pickedIt = currentMap.interactables[selectedItem.index];
@@ -2566,8 +2786,8 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
           {selectedCategory === 'mymodels' && (
             <div className="p-3 border-b border-white/5 flex flex-col gap-2">
               <label className="w-full py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-black uppercase tracking-wider rounded-xl flex items-center justify-center gap-2 cursor-pointer active:scale-95 transition-all">
-                <Upload size={14} /> Upload models (.glb) - pick many
-                <input type="file" multiple accept=".glb,model/gltf-binary,application/octet-stream" className="hidden" onChange={async (e) => {
+                <Upload size={14} /> Upload models (.glb or a .zip of them)
+                <input type="file" multiple accept=".glb,.zip,model/gltf-binary,application/zip,application/octet-stream" className="hidden" onChange={async (e) => {
                   const files: File[] = e.target.files ? Array.from(e.target.files as ArrayLike<File>) : [];
                   e.target.value = '';
                   await uploadModelFiles(files);

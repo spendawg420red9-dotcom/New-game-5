@@ -16,6 +16,7 @@ import { EnemyDisplay } from './components/EnemyDisplay';
 import { Zombie3D, Dragon3D, Elephant3D, Ogre3D, Worm3D, MushroomKeeper3D } from './components/Enemy3DModels';
 import ShopItemPreview from './components/ShopItemPreview';
 import { Player3DViewer as Player3DViewerComponent } from './components/Player3DViewer';
+import { MOVE_DURATION_MS } from './moves';
 
 import { useEnemyGlbUrl, EnemyGLB } from './components/EnemyModelViewer';
 import { GLBBoundary } from './components/GLBProp';
@@ -122,7 +123,8 @@ const EmblemView = ({ emblem, size = 64, className = "" }: { emblem?: EmblemLaye
             style={{
               color: layer.color,
               opacity: layer.opacity ?? 1,
-              transform: `translate(${layer.x}px, ${layer.y}px) scale(${layer.scale || 1}) rotate(${layer.rotation || 0}deg)`,
+              transform: `translate(${layer.x}px, ${layer.y}px) scale(${(layer.flipX ? -1 : 1) * (layer.scale || 1)}, ${(layer.flipY ? -1 : 1) * (layer.scale || 1)}) rotate(${layer.rotation || 0}deg)`,
+              filter: layer.glow ? `drop-shadow(0 0 8px ${layer.color})` : undefined,
             }}
           >
             <span className="font-black" style={{ 
@@ -957,6 +959,15 @@ const ACHIEVEMENTS: Achievement[] = [
   { id: 'emblem_collector', name: 'Emblem Curator', description: 'Save 5 custom emblems to your library', icon: '🖼️', category: 'progression', reward: 150 },
   { id: 'allied_forces', name: 'Allied Forces', description: 'Save a friend\'s custom emblem to your library', icon: '⭐', category: 'progression', reward: 100 },
   { id: 'crow_hunter', name: 'Crow Hunter', description: 'Shoot 5 hidden crows on King Robbo\'s farm', icon: '🐦', category: 'easter_egg', reward: 150 },
+  { id: 'round_15', name: 'Hanging In', description: 'Reach round 15', icon: '⏳', category: 'progression', reward: 100 },
+  { id: 'round_75', name: 'Three Quarters', description: 'Reach round 75', icon: '🌋', category: 'progression', reward: 400 },
+  { id: 'points_100k', name: 'Six Figures', description: 'Earn 100,000 points in a single game', icon: '🪙', category: 'progression', reward: 150 },
+  { id: 'kills_1000', name: 'Zombie Hunter', description: 'Kill 1,000 zombies total', icon: '🔫', category: 'combat', reward: 150 },
+  { id: 'kills_50000', name: 'Apocalypse', description: 'Kill 50,000 zombies total', icon: '☄️', category: 'combat', reward: 600 },
+  { id: 'headshot_250', name: 'Dead Eye', description: 'Get 250 headshots in a single game', icon: '👁️', category: 'combat', reward: 150 },
+  { id: 'first_dance', name: 'Happy Feet', description: 'Perform a dance move', icon: '🕺', category: 'progression', reward: 50 },
+  { id: 'first_finisher', name: 'Finish Him', description: 'Perform a finisher move', icon: '💥', category: 'combat', reward: 80 },
+  { id: 'gem_hoarder', name: 'Gem Hoarder', description: 'Collect 10,000 gems', icon: '💎', category: 'progression', reward: 200 },
   { id: 'undead_master', name: 'Undead Master', description: 'Defeat a Boss and Reach Round 30 on any map', icon: '💀', category: 'combat', reward: 250 }
 ];
 
@@ -1493,7 +1504,8 @@ const EmblemEditor = ({ initialEmblem, onSave, onClose, unlockAchievement }: { i
                     style={{
                       color: layer.color,
                       opacity: layer.opacity ?? 1,
-                      transform: `translate(${layer.x}px, ${layer.y}px) scale(${layer.scale}) rotate(${layer.rotation}deg)`,
+                      transform: `translate(${layer.x}px, ${layer.y}px) scale(${(layer.flipX ? -1 : 1) * layer.scale}, ${(layer.flipY ? -1 : 1) * layer.scale}) rotate(${layer.rotation}deg)`,
+                      filter: layer.glow ? `drop-shadow(0 0 8px ${layer.color})` : undefined,
                       transition: 'none'
                     }}
                   >
@@ -1509,6 +1521,37 @@ const EmblemEditor = ({ initialEmblem, onSave, onClose, unlockAchievement }: { i
               </div>
             </div>
 
+            {/* Quick tools: the things people reach for most, always in reach */}
+            <div className="mt-3 flex flex-wrap justify-center gap-1.5 max-w-[340px] z-20">
+              {[
+                { t: '➕ Add', f: () => addLayer() },
+                { t: '⧉ Copy', f: () => selectedLayerId && duplicateLayer(selectedLayerId) },
+                { t: '⇋ Flip', f: () => { const l = layers.find(x => x.id === selectedLayerId); if (l) updateLayer(l.id, { flipX: !l.flipX }); } },
+                { t: '🪞 Mirror', f: () => { const l = layers.find(x => x.id === selectedLayerId); if (!l) return; const m: EmblemLayer = { ...l, id: Math.random().toString(36).substring(2, 9), x: -l.x, rotation: -l.rotation, flipX: !l.flipX }; setLayers([m, ...layers]); setSelectedLayerId(m.id); } },
+                { t: '◎ Centre', f: () => { if (selectedLayerId) updateLayer(selectedLayerId, { x: 0, y: 0 }); } },
+                { t: '✨ Glow', f: () => { const l = layers.find(x => x.id === selectedLayerId); if (l) updateLayer(l.id, { glow: !l.glow }); } },
+                { t: '⤒ Front', f: () => { const i = layers.findIndex(x => x.id === selectedLayerId); if (i > 0) { const n = [...layers]; const [it] = n.splice(i, 1); n.unshift(it); setLayers(n); } } },
+                { t: '⤓ Back', f: () => { const i = layers.findIndex(x => x.id === selectedLayerId); if (i >= 0 && i < layers.length - 1) { const n = [...layers]; const [it] = n.splice(i, 1); n.push(it); setLayers(n); } } },
+                { t: '🗑 Delete', f: () => selectedLayerId && removeLayer(selectedLayerId) },
+              ].map(b => (
+                <button key={b.t} onClick={b.f} className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 active:scale-95 border border-white/10 rounded text-[11px] font-black text-white">{b.t}</button>
+              ))}
+            </div>
+            <div className="mt-2 flex flex-wrap justify-center gap-1.5 max-w-[340px] z-20">
+              <span className="w-full text-center text-[9px] font-bold text-white/40 uppercase tracking-wider">One-tap starters (replaces the canvas)</span>
+              {([
+                { n: 'Skull Crest', l: [['🛡', '#334155', 0, 6, 1.6], ['☠', '#f8fafc', 0, -4, 1.0], ['★', '#facc15', 0, 52, 0.45]] },
+                { n: 'Bolt Badge', l: [['●', '#7c3aed', 0, 0, 1.8], ['⚡', '#facc15', 0, 0, 1.2]] },
+                { n: 'Heart Wings', l: [['♥', '#ef4444', 0, 0, 1.1], ['✦', '#fde68a', -62, -10, 0.7], ['✦', '#fde68a', 62, -10, 0.7]] },
+                { n: 'Flame Star', l: [['★', '#f97316', 0, 0, 1.7], ['🔥', '#ef4444', 0, 8, 0.9]] },
+              ] as { n: string; l: [string, string, number, number, number][] }[]).map(pre => (
+                <button key={pre.n} onClick={() => {
+                  const made: EmblemLayer[] = pre.l.map(([icon, color, x, y, scale]) => ({ id: Math.random().toString(36).substring(2, 9), icon, color, x, y, scale, rotation: 0, opacity: 1 }));
+                  setLayers(made.reverse()); setSelectedLayerId(made[0]?.id ?? null);
+                }} className="px-2 py-1 bg-emerald-900/50 hover:bg-emerald-800 border border-emerald-500/30 rounded text-[10px] font-black text-emerald-200">{pre.n}</button>
+              ))}
+            </div>
+            <p className="text-white/50 text-[10px] font-bold text-center mt-2 max-w-[300px]">Tap a shape to select it. Drag to move. Two fingers: pinch to resize, twist to rotate. Open Props to change shape and colour.</p>
             {/* Micro-movement helper hint */}
             <p className="text-white/40 text-[9px] font-bold uppercase tracking-wider text-center mt-3 max-w-[240px]">
               {canvasZoom > 1.0 ? `Zoomed inside canvas (${Math.round(canvasZoom * 100)}%) — small shifts are highly precise` : "Zoom in for sub-pixel control over tiny detail shapes"}
@@ -2664,12 +2707,13 @@ const App: React.FC = () => {
       setStats(prev => ({ ...prev, finisherCharge: 0 }));
     }
 
+    unlockAchievement(type === 'dance' ? 'first_dance' : 'first_finisher');
     setActiveMove({ type, name });
     setIsDoingMove(true);
     setTimeout(() => {
       setIsDoingMove(false);
       setActiveMove(null);
-    }, 3500); // 3.5s duration
+    }, type === 'dance' ? MOVE_DURATION_MS.dance : MOVE_DURATION_MS.finisher); // long enough to enjoy
   };
 
 
@@ -4856,6 +4900,13 @@ const App: React.FC = () => {
       if (stats.activeMapId === 't_dogs_land') unlockAchievement('tdogs_perkaholic');
     }
     if (stats.perks.length >= 4) unlockAchievement('perk_addict');
+    if (stats.round >= 15) unlockAchievement('round_15');
+    if (stats.round >= 75) unlockAchievement('round_75');
+    if (stats.totalPoints >= 100000) unlockAchievement('points_100k');
+    if (stats.headshots >= 250) unlockAchievement('headshot_250');
+    if (progression.totalKills >= 1000) unlockAchievement('kills_1000');
+    if (progression.totalKills >= 50000) unlockAchievement('kills_50000');
+    if ((progression.profile?.totalGems || 0) >= 10000) unlockAchievement('gem_hoarder');
   }, [stats.round, stats.totalPoints, stats.headshots, stats.knifeKills, progression.totalKills, progression.totalRevives, isCustomGameSession, status, unlockAchievement, stats.perks.length, stats.activeMapId]);
 
   const handleInteract = () => {
@@ -5913,6 +5964,14 @@ const App: React.FC = () => {
       );
     }
 
+    // Custom maps can choose their own heart spots; any missing ones are picked at random
+    const chosen: THREE.Vector3[] = (((activeMapConfig as any)?.heartSpots || []) as [number, number, number][]).slice(0, 3).map(p => new THREE.Vector3(p[0], p[1], p[2]));
+    if (chosen.length > 0) {
+      const extra = possiblePoints.sort(() => 0.5 - Math.random());
+      while (chosen.length < 3 && extra.length) chosen.push(extra.pop()!);
+      setHeartPositions(chosen);
+      return;
+    }
     // Shuffle and pick 3
     const shuffled = possiblePoints.sort(() => 0.5 - Math.random());
     setHeartPositions(shuffled.slice(0, 3));
@@ -9432,10 +9491,50 @@ const App: React.FC = () => {
               >
                 World's Top 100
               </button>
+              <button
+                onClick={() => {
+                  setLeaderboardTab('community');
+                  socket?.emit('get_community_maps');
+                  fetch('/api/community-maps').then(r => r.json()).then(d => { if (Array.isArray(d) && d.length) setCommunityMaps(d); }).catch(() => {});
+                }}
+                className={`px-6 py-2 rounded-sm font-black italic uppercase transition-all border ${leaderboardTab === 'community' ? 'bg-amber-600 border-amber-400 text-white' : 'bg-white/5 border-white/10 text-white/40 hover:bg-white/10'}`}
+              >
+                🗺️ Maps
+              </button>
             </div>
 
+            {leaderboardTab === 'community' && (
+              <div className="flex-grow overflow-auto space-y-3 pb-6">
+                <p className="text-xs text-white/50 text-center">Maps other players published from the Map Builder. Add one to your own maps to play it or edit your copy.</p>
+                {communityMaps.length === 0 && <div className="p-10 text-center text-white/30 italic">No published maps yet. Publish yours from the Map Builder.</div>}
+                {[...communityMaps].sort((a, b) => (b.likes || 0) - (a.likes || 0)).map(m => (
+                  <div key={m.id} className="flex gap-3 bg-white/5 border border-white/10 rounded-sm p-3 items-center">
+                    <div className="w-24 h-14 rounded bg-zinc-800 overflow-hidden shrink-0" style={{ background: m.mapConfig?.floorColor || '#27272a' }}>
+                      {m.thumbnail && <img src={m.thumbnail} alt="" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-white font-black italic uppercase truncate">{m.name}</div>
+                      <div className="text-[11px] text-white/50 truncate">by {m.creator || 'Survivor'} · ❤ {m.likes || 0} · ▶ {m.plays || 0} plays · {m.mapConfig?.objects?.length || 0} pieces</div>
+                      <div className="text-[11px] text-white/40 truncate">{m.description}</div>
+                      {m.highScores?.[0] && <div className="text-[10px] text-yellow-400/80">Best: round {m.highScores[0].round} by {m.highScores[0].nickname}</div>}
+                    </div>
+                    <div className="flex flex-col gap-1.5 shrink-0">
+                      <button onClick={() => {
+                        if (!m.mapConfig) return;
+                        const copy: MapConfig = { ...JSON.parse(JSON.stringify(m.mapConfig)), id: `custom_${Date.now().toString(36)}`, name: `${m.name} (by ${m.creator || 'Survivor'})` };
+                        saveCustomMap(copy);
+                        soundService.playPowerUpPickup();
+                        alert(`Added "${m.name}" to your maps. Open Make Your Own to play or edit it.`);
+                      }} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded text-[11px] font-black uppercase">➕ Add to my maps</button>
+                      <button onClick={() => { setCommunityMaps(likeLocalCommunityMap(m.id)); socket?.emit('like_community_map', m.id); }} className="px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded text-[11px] font-black uppercase">❤ Like</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* Map Selector */}
-            <div className="flex gap-2 overflow-x-auto pb-2 flex-shrink-0 no-scrollbar">
+            <div className={`flex gap-2 overflow-x-auto pb-2 flex-shrink-0 no-scrollbar ${leaderboardTab === 'community' ? 'hidden' : ''}`}>
               {MAPS.map((map, idx) => (
                 <button
                   key={map.id}
@@ -9448,6 +9547,12 @@ const App: React.FC = () => {
                   } ${selectedMenuIndex === idx + 2 ? 'ring-2 ring-white scale-105' : ''}`}
                 >
                   {map.name}
+                </button>
+              ))}
+              {savedCustomMaps.map(cm => (
+                <button key={cm.id} onClick={() => setLeaderboardMapId(cm.id)}
+                  className={`px-4 py-2 rounded-sm font-black italic uppercase text-xs transition-all whitespace-nowrap border ${leaderboardMapId === cm.id ? 'bg-white text-black border-white' : 'bg-white/5 text-white/40 border-white/10 hover:bg-white/10'}`}>
+                  🛠 {cm.name}
                 </button>
               ))}
             </div>
@@ -9653,7 +9758,7 @@ const App: React.FC = () => {
               </div>
             )}
             
-            <div className="flex-grow overflow-auto bg-white/5 border border-white/10 rounded-sm shadow-2xl no-scrollbar">
+            <div className={`flex-grow overflow-auto bg-white/5 border border-white/10 rounded-sm shadow-2xl no-scrollbar ${leaderboardTab === 'community' ? 'hidden' : ''}`}>
               <div className="min-w-[1200px]">
                 {/* Header */}
                 <div className="grid grid-cols-[60px_minmax(150px,1fr)_80px_80px_80px_100px_80px_80px_100px_80px_80px_80px_80px_80px_100px] gap-4 p-4 border-b border-white/10 bg-white/5 sticky top-0 z-10">
@@ -9675,9 +9780,9 @@ const App: React.FC = () => {
                 </div>
 
                 {(() => {
-                  const data = leaderboardTab === 'personal' ? leaderboard.filter(e => e.mapId === leaderboardMapId) : 
+                  const data = leaderboardTab === 'personal' ? leaderboard.filter(e => e.mapId === leaderboardMapId).sort((a, b) => (b.round - a.round) || (b.kills - a.kills)).slice(0, 10) : 
                                leaderboardTab === 'friends' ? getFriendsLeaderboardData() : 
-                               worldLeaderboard.filter(e => e.mapId === leaderboardMapId);
+                               worldLeaderboard.filter(e => e.mapId === leaderboardMapId).slice(0, 100);
                   
                   const isAnyFriendsConnected = manualFriends.length > 0 || incomingFriendRequests.length > 0;
                   

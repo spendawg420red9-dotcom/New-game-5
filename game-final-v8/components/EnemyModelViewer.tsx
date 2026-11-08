@@ -83,7 +83,9 @@ export const EnemyGLB: React.FC<{ url: string }> = ({ url }) => {
   }, [gltf]);
   const { actions, names } = useAnimations(gltf.animations || [], model);
   useEffect(() => {
-    const first = names && names[0] ? actions[names[0]] : null;
+    // Prefer an idle / walk style clip over a death or attack one
+    const pick = (names || []).find(n => /idle|walk|run|crawl|fly|hover|float|move/i.test(n)) || (names || []).find(n => !/death|die|dead|attack|hit|jump|spawn/i.test(n)) || (names || [])[0];
+    const first = pick ? actions[pick] : null;
     first?.reset().fadeIn(0.2).play();
     return () => { first?.fadeOut(0.1); };
   }, [actions, names]);

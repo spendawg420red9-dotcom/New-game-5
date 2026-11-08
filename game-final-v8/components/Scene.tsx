@@ -8,6 +8,8 @@ import { resolveModelUrl } from '../userModels';
 import { MODEL_DEFAULTS } from '../modelDefaults';
 import { buildTerrain, isTerrainType, STEP_UP, VOID_FALL_Y } from '../terrain';
 import { TerrainObject, useFloorGeometry } from './TerrainPieces';
+import { getProcTexture, isProcTexture, procName } from '../proceduralTextures';
+import { EXTRA_MOVES, animateExtraMove, resetPose } from '../moves';
 import { User, Skull, Shield, Zap, Swords } from 'lucide-react';
 import * as THREE from 'three';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -1287,7 +1289,9 @@ const getWeaponLevel = (name: string) => {
 };
 
 const TexturedObject: React.FC<{ type: string, args: any, pos: any, rotation?: any, color?: string, texture: string, emissive?: string, emissiveIntensity?: number, metalness?: number, roughness?: number }> = ({ type, args, pos, rotation, color = '#ffffff', texture, emissive, emissiveIntensity, metalness, roughness }) => {
-  const tex = useTexture(texture);
+  const procTex = isProcTexture(texture) ? procName(texture) : null;
+  const loadedTex = useTexture(procTex ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' : texture);
+  const tex = procTex ? getProcTexture(procTex) : loadedTex;
   if (type === 'cylinder') {
     return (
       <Cylinder args={args || [2, 4, 2]} position={pos} rotation={rotation}>
@@ -2683,6 +2687,7 @@ export const Scene: React.FC<SceneProps> = ({
   const zombieMode = mapConfig.zombieSpawnMode || 'around';
   const zombieClimbStep = mapConfig.zombiesClimb === false ? 0.9 : 3;
   const groundYRef = useRef(0); // height of the ground under the player's feet while standing
+  const onLadderRef = useRef(false);
 
   const collisionWalls = useMemo(() => {
     const walls: Wall[] = [];
@@ -3327,8 +3332,20 @@ export const Scene: React.FC<SceneProps> = ({
     
     const eyeFloorY = floorY + currentEyeHeight;
 
+    // Ladders: push forward to climb up, back to climb down
+    onLadderRef.current = false;
+    if (terrainOn && !gameState.isDowned && terrain.ladderAt(playerPos.current.x, playerPos.current.z, feetNow)) {
+      const climb = moveInput.current.y;
+      if (!isGrounded.current || climb > 0.25) {
+        onLadderRef.current = true;
+        verticalVelocity.current = 0;
+        isGrounded.current = false;
+        if (Math.abs(climb) > 0.25) playerPos.current.y += Math.sign(climb) * 3.8 * delta;
+      }
+    }
+
     if (!isGrounded.current) {
-      verticalVelocity.current -= 25 * delta;
+      if (!onLadderRef.current) verticalVelocity.current -= 25 * delta;
       // bump your head on the underside of a platform
       if (terrainOn && verticalVelocity.current > 0 && terrain.ceilingAt(playerPos.current.x, playerPos.current.z, feetNow) < playerPos.current.y + 0.35) verticalVelocity.current = 0;
       playerPos.current.y += verticalVelocity.current * delta;
@@ -3516,6 +3533,7 @@ export const Scene: React.FC<SceneProps> = ({
       moveVector.addScaledVector(forward, moveInput.current.y).addScaledVector(right, moveInput.current.x);
       if (moveVector.length() > 1) moveVector.normalize();
       moveVector.multiplyScalar(speed);
+      if (onLadderRef.current) moveVector.multiplyScalar(0.35);
     }
 
     const nextPos = tempVec1.current;
@@ -7251,9 +7269,14 @@ export const LocalPlayerModel: React.FC<{
 
         if (isVictoryPose || isDoingMove) {
           const time = state.clock.getElapsedTime();
-          const moveType = (isDoingMove && activeMove) ? activeMove.name : (customization?.danceMove || customization?.finisherMove || 'Tactical Takedown');
-          
-          if (moveType === 'Standard Dance') {
+          const pickDance = customization?.danceMove && customization.danceMove !== 'none' ? customization.danceMove : undefined;
+          const moveType = (isDoingMove && activeMove) ? activeMove.name : (pickDance || customization?.finisherMove || 'Tactical Takedown');
+          // Start every frame from a neutral pose so one move never leaves its pose behind in the next
+          resetPose({ body: mesh.current, la: leftArm, ra: rightArm, ll: leftLeg, rl: rightLeg }, playerPos.y - 1.2, playerRot.y);
+
+          if (EXTRA_MOVES.has(moveType)) {
+            animateExtraMove(moveType, state.clock.getElapsedTime(), { body: mesh.current, la: leftArm, ra: rightArm, ll: leftLeg, rl: rightLeg }, playerPos.y - 1.2, playerRot.y);
+          } else if (moveType === 'Standard Dance') {
             const swing = Math.sin(time * 8);
             mesh.current.position.y = (playerPos.y - 1.2) + Math.abs(swing) * 0.15;
             if (leftArm.current) {
@@ -7896,7 +7919,7 @@ const BOSS_SKIN_HEIGHT: Record<string, number> = { dragon: 12, elephant: 9, ogre
 
 // Models that come with their own skeleton and animation clips (walk, idle, attack...) play those clips:
 // walking while the zombie moves, idle when it stands still. Models without clips use the shape-based rig above.
-const ClipModelBody: React.FC<{ url: string; scale?: number; hitFlash: number }> = ({ url, scale = 1, hitFlash }) => {
+const ClipModelBody: React.FC<{ url: string; scale?: number; hitFlash: number; kind?: string }> = ({ url, scale = 1, hitFlash, kind }) => {
   const { scene, animations } = useGLTF(resolveModelUrl(url)) as any;
   shrinkSceneTextures(scene);
   const { gl } = useThree();
@@ -7912,7 +7935,9 @@ const ClipModelBody: React.FC<{ url: string; scale?: number; hitFlash: number }>
     const clone: THREE.Object3D = cloneSkinned(scene);
     clone.updateWorldMatrix(true, true);
     const box = new THREE.Box3().setFromObject(clone);
-    const H = Math.max(box.max.y - box.min.y, 1e-4);
+    // Low or wide bodies (crawlers, parasites, bats) are sized by their longest side, not their height, or they blow up huge
+    const low = kind === 'crawler' || kind === 'parasite';
+    const H = Math.max(low ? Math.max(box.max.y - box.min.y, 0.8 * Math.max(box.max.x - box.min.x, box.max.z - box.min.z)) : box.max.y - box.min.y, 1e-4);
     const c = box.getCenter(new THREE.Vector3());
     const wrap = new THREE.Group();
     clone.position.set(-c.x, -box.min.y, -c.z);
@@ -7940,10 +7965,16 @@ const ClipModelBody: React.FC<{ url: string; scale?: number; hitFlash: number }>
     });
     const mixer = new THREE.AnimationMixer(clone);
     const find = (re: RegExp) => (animations as THREE.AnimationClip[]).find(a => re.test(a.name));
-    const walkClip = find(/walk|run|move|shamble|crawl|stride/i) || animations[0];
-    const idleClip = find(/idle|stand|breath|wait/i);
+    // Pick the movement clip for this kind of enemy; never fall back to a death / attack / spawn clip
+    const avoid = /death|die|dead|attack|hit|hurt|jump|spawn|emerge|scream|bite|swipe|fall/i;
+    const pref = kind === 'crawler' ? /crawl|creep|slither|drag|walk|run|move/i
+      : kind === 'parasite' ? /fly|flap|hover|float|glide|swim|wing|walk|run|move/i
+      : /walk|run|move|shamble|stride/i;
+    const safe = (animations as THREE.AnimationClip[]).filter(a => !avoid.test(a.name));
+    const walkClip = find(pref) || safe[0] || animations[0];
+    const idleClip = find(/idle|stand|breath|wait|hover/i);
     return { wrap, mixer, mats, walk: mixer.clipAction(walkClip), idle: idleClip && idleClip !== walkClip ? mixer.clipAction(idleClip) : null };
-  }, [scene, animations, gl]);
+  }, [scene, animations, gl, kind]);
 
   useEffect(() => () => { built.mixer.stopAllAction(); }, [built]);
   useEffect(() => {
@@ -7983,7 +8014,7 @@ const ClipModelBody: React.FC<{ url: string; scale?: number; hitFlash: number }>
 };
 
 // Picks the right body for a .glb: its own animation clips when it has a skeleton + clips, otherwise the shape-based rig.
-const ModelBody: React.FC<{ url: string; scale?: number; hitFlash: number }> = (props) => {
+const ModelBody: React.FC<{ url: string; scale?: number; hitFlash: number; kind?: string }> = (props) => {
   const { scene, animations } = useGLTF(resolveModelUrl(props.url)) as any;
   const hasClips = useMemo(() => {
     let skinned = false;
@@ -8060,10 +8091,13 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
       const bobSpeed = type === 'runner' ? 15 : (type === 'tank' ? 2 : 4);
       let yOffset = Math.abs(Math.sin(state.clock.elapsedTime * bobSpeed + variant * 10)) * 0.12;
       
+      const ownModel = !!customZombieConfig?.modelUrl;
       if (type === 'parasite') {
-        yOffset = 2.0 + Math.sin(state.clock.elapsedTime * 2) * 0.5; // Flying height
+        yOffset = ownModel ? 1.4 + Math.sin(state.clock.elapsedTime * 2) * 0.25 : 2.0 + Math.sin(state.clock.elapsedTime * 2) * 0.5; // Flying height
       } else if (type === 'crawler') {
-        yOffset = -0.5 + Math.abs(Math.sin(state.clock.elapsedTime * 10)) * 0.1; // Low profile
+        yOffset = ownModel ? 0 : -0.5 + Math.abs(Math.sin(state.clock.elapsedTime * 10)) * 0.1; // your model keeps its feet on the floor
+      } else if (ownModel) {
+        yOffset = 0; // a model with its own animation should not also bob up and down
       }
 
       meshRef.position.set(position.x, position.y + yOffset, position.z);
@@ -8113,7 +8147,7 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
       {customZombieConfig?.modelUrl ? (
         <GLBBoundary fallback={<ZombieFallbackBody color={customZombieConfig.skinColor || '#4d7c0f'} hitFlash={hitFlash} />}>
           <Suspense fallback={<ZombieFallbackBody color={customZombieConfig.skinColor || '#4d7c0f'} hitFlash={hitFlash} />}>
-            <ModelBody url={customZombieConfig.modelUrl} scale={customZombieConfig.modelScale ?? 1} hitFlash={hitFlash} />
+            <ModelBody url={customZombieConfig.modelUrl} scale={customZombieConfig.modelScale ?? 1} hitFlash={hitFlash} kind={type} />
           </Suspense>
         </GLBBoundary>
       ) : (<>
@@ -8332,10 +8366,13 @@ const MysteryBox: React.FC<{ pos: THREE.Vector3, cyclingWeapon?: string | null }
 };
 
 const Ground: React.FC<{ mapConfig: MapConfig; pits?: { cx: number; cz: number; cs: number; sn: number; hw: number; hd: number }[] }> = ({ mapConfig, pits }) => {
-  const texture = useTexture(mapConfig.floorTexture || 'https://picsum.photos/seed/asphalt/512/512');
+  const procFloor = isProcTexture(mapConfig.floorTexture) ? procName(mapConfig.floorTexture) : null;
+  const loaded = useTexture(procFloor ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' : (mapConfig.floorTexture || 'https://picsum.photos/seed/asphalt/512/512'));
+  // built-in textures: own copy so the floor's tiling never changes the same texture used on hills and platforms
+  const texture = useMemo(() => { if (!procFloor) return loaded; const t = getProcTexture(procFloor).clone(); t.needsUpdate = true; return t; }, [procFloor, loaded]);
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
   // Maps with a set size, pits (holes), a tile size or a shine setting get their own floor. Everything else uses the original one.
-  const customFloor = !!mapConfig.mapSize || (pits && pits.length > 0) || !!mapConfig.floorTile || mapConfig.floorRoughness !== undefined;
+  const customFloor = !!procFloor || !!mapConfig.mapSize || (pits && pits.length > 0) || !!mapConfig.floorTile || mapConfig.floorRoughness !== undefined;
   const floorGeo = useFloorGeometry(customFloor ? (mapConfig.mapSize || 500) : 0, pits || []);
   if (mapConfig.floorMode === 'none') return null; // no floor at all
   if (customFloor && floorGeo) {

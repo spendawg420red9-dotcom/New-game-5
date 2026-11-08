@@ -87,7 +87,7 @@ export interface AssetDefinition {
   label?: string;
   cost?: number;
   interactableType?: string;
-  objectType?: 'box' | 'wall' | 'cylinder' | 'building' | 'streetlight' | 'mushroom' | 'tree' | 'crow' | 'sphere' | 'pyramid' | 'custom' | 'platform' | 'ramp' | 'stairs' | 'hill' | 'pit';
+  objectType?: 'box' | 'wall' | 'cylinder' | 'building' | 'streetlight' | 'mushroom' | 'tree' | 'crow' | 'sphere' | 'pyramid' | 'custom' | 'platform' | 'ramp' | 'stairs' | 'hill' | 'pit' | 'ladder';
   emissive?: string;
   emissiveIntensity?: number;
   metalness?: number;
@@ -120,7 +120,7 @@ export const ASSET_CATEGORIES: AssetCategory[] = [
 export const ASSET_CATALOG: AssetDefinition[] = [
   // --- TERRAIN: hills, platforms, ramps, stairs and underground pits (see terrain.ts) ---
   ...(() => {
-    const T = (id: string, name: string, icon: string, description: string, objectType: 'platform' | 'ramp' | 'stairs' | 'hill' | 'pit', defaultArgs: [number, number, number], color: string, extra: Partial<AssetDefinition> = {}): AssetDefinition =>
+    const T = (id: string, name: string, icon: string, description: string, objectType: 'platform' | 'ramp' | 'stairs' | 'hill' | 'pit' | 'ladder', defaultArgs: [number, number, number], color: string, extra: Partial<AssetDefinition> = {}): AssetDefinition =>
       ({ id, name, category: 'terrain', icon, description, type: 'object', objectType, defaultArgs, color, behavior: 'solid', ...extra });
     return [
       T('ter_hill_small', 'Small Hill', '⛰️', 'Gentle grassy mound you can walk up. Zombies climb it too.', 'hill', [24, 4, 24], '#4d7c0f'),
@@ -141,6 +141,8 @@ export const ASSET_CATALOG: AssetDefinition[] = [
       T('ter_stairs_s', 'Stairs', '🪜', 'Climbs 2 m.', 'stairs', [6, 2, 6], '#a8a29e'),
       T('ter_stairs_m', 'Stairs (4 m)', '🪜', 'Climbs 4 m.', 'stairs', [8, 4, 12], '#a8a29e'),
       T('ter_stairs_l', 'Big Stairs (8 m)', '🪜', 'Climbs 8 m.', 'stairs', [12, 8, 24], '#a8a29e'),
+      T('ter_ladder', 'Ladder (4 m)', '🪜', 'Walk into it and push forward to climb up, back to climb down.', 'ladder', [1.4, 4, 0.3], '#a16207'),
+      T('ter_ladder_tall', 'Tall Ladder (8 m)', '🪜', 'Climb 8 m.', 'ladder', [1.4, 8, 0.3], '#a16207'),
       T('ter_pit_s', 'Small Pit', '🕳️', 'A hole in the floor, 4 m deep. Add stairs inside to climb out.', 'pit', [12, 4, 12], '#3f3f46', { posY: -2 }),
       T('ter_pit', 'Basement Pit', '🕳️', 'An underground room 8 m deep. Add stairs or a ramp inside to get in and out.', 'pit', [24, 8, 24], '#3f3f46', { posY: -4 }),
       T('ter_pit_deep', 'Deep Pit', '🕳️', 'A huge hole, 16 m deep.', 'pit', [30, 16, 30], '#27272a', { posY: -8 }),
@@ -431,6 +433,7 @@ export const ASSET_CATALOG: AssetDefinition[] = [
   },
 
   // --- MORE WALLS & BUILDING PIECES (all resizable, rotatable, and can be chained into full walls) ---
+  { id: 'prop_poster', name: 'Poster / Picture Frame', category: 'props', icon: '🖼️', description: 'Thin panel for your own picture. Select it, press 🖼 Image and pick a photo, then rotate/move it onto a wall.', type: 'object', objectType: 'box', defaultArgs: [4, 3, 0.15], posY: 2.5, color: '#e4e4e7', behavior: 'decor' },
   { id: 'prop_brick_wall', name: 'Brick Wall', category: 'props', icon: '🧱', description: 'Solid brick wall panel. Use "Add next" to chain a full wall.', type: 'object', objectType: 'box', defaultArgs: [10, 5, 1], color: '#b45309', texture: 'https://picsum.photos/seed/brickwall/512/512' },
   { id: 'prop_tall_wall', name: 'Tall Wall', category: 'props', icon: '🏛️', description: 'Extra tall boundary wall', type: 'object', objectType: 'box', defaultArgs: [10, 12, 1.2], color: '#52525b', texture: 'https://picsum.photos/seed/concrete/512/512' },
   { id: 'prop_low_wall', name: 'Low Cover Wall', category: 'props', icon: '▬', description: 'Waist-high cover', type: 'object', objectType: 'box', defaultArgs: [8, 1.6, 1], color: '#71717a', texture: 'https://picsum.photos/seed/concrete/512/512' },
@@ -715,6 +718,16 @@ export const ASSET_CATALOG: AssetDefinition[] = [
     type: 'station',
     interactableType: 'Health Refill',
     cost: 1500,
+  },
+  {
+    id: 'dragonHeart',
+    name: 'Dragon Heart',
+    category: 'stations',
+    icon: '❤️‍🔥',
+    description: 'Boss heart spot (max 3). Place one to choose where it sits; place again to add the next. Remove them in Map Settings.',
+    type: 'station',
+    interactableType: 'Dragon Heart',
+    cost: 0,
   },
   {
     id: 'craftingTable',

@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber';
 import { Stage, OrbitControls } from '@react-three/drei';
 import { LocalPlayerModel } from './Scene';
 import * as THREE from 'three';
+import { DANCE_MOVES, FINISHER_MOVES } from '../moves';
 
 export const Player3DViewer = ({ customization, profile, height = "h-[450px]" }: { customization?: any; profile?: any; height?: string }) => {
   const activeConfig = customization || profile;
@@ -15,28 +16,15 @@ export const Player3DViewer = ({ customization, profile, height = "h-[450px]" }:
   useEffect(() => {
     if (activeConfig) {
       if (selectedCategory === 'dance') {
-        setActiveMove(activeConfig.danceMove || 'Standard Dance');
+        setActiveMove((activeConfig.danceMove && activeConfig.danceMove !== 'none' ? activeConfig.danceMove : 'Standard Dance'));
       } else {
         setActiveMove(activeConfig.finisherMove || 'Tactical Takedown');
       }
     }
   }, [activeConfig, selectedCategory]);
 
-  const danceList = [
-    { id: 'Standard Dance', name: '💃 Standard' },
-    { id: 'Moonwalk', name: '🚶 Moonwalk' },
-    { id: 'Floss', name: '👐 Floss' },
-    { id: 'Carlton Dance', name: '🕺 Carlton' },
-    { id: 'Orange Justice', name: '🔥 Orange Justice' }
-  ];
-
-  const finisherList = [
-    { id: 'Tactical Takedown', name: '💥 Tactical Takedown' },
-    { id: 'Roundhouse Kick', name: '🦵 Roundhouse Kick' },
-    { id: 'Suplex', name: '🤼 Suplex' },
-    { id: 'Zombie Finisher', name: '🧟 Zombie Finisher' },
-    { id: 'Boss Execution', name: '👹 Boss Execution' }
-  ];
+  const danceList = DANCE_MOVES;
+  const finisherList = FINISHER_MOVES;
 
   const currentMoves = selectedCategory === 'dance' ? danceList : finisherList;
 
@@ -56,7 +44,7 @@ export const Player3DViewer = ({ customization, profile, height = "h-[450px]" }:
             type="button"
             onClick={() => {
               setSelectedCategory('dance');
-              setActiveMove(activeConfig?.danceMove || 'Standard Dance');
+              setActiveMove((activeConfig?.danceMove && activeConfig.danceMove !== 'none' ? activeConfig.danceMove : 'Standard Dance'));
             }}
             className={`px-2.5 py-1 text-[9px] font-black uppercase tracking-wider rounded-sm transition-all duration-150 ${selectedCategory === 'dance' ? 'bg-pink-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
           >

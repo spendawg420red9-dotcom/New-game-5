@@ -237,7 +237,7 @@ export interface CustomSkinConfig {
 export interface MapObject {
   type: 'box' | 'wall' | 'cylinder' | 'plane' | 'building' | 'streetlight' | 'mushroom' | 'tree' | 'crow' | 'sphere' | 'pyramid' | 'custom'
     // Terrain pieces (map builder): walkable ground you can stand on. See terrain.ts
-    | 'platform' | 'ramp' | 'stairs' | 'hill' | 'pit';
+    | 'platform' | 'ramp' | 'stairs' | 'hill' | 'pit' | 'ladder';
   pos: [number, number, number];
   args?: [number, number, number];
   color?: string;
@@ -306,6 +306,8 @@ export interface MapConfig {
   side1SpawnPoints?: [number, number, number][];
   side2SpawnPoints?: [number, number, number][];
   craftingTablePos: [number, number, number];
+  // Where the boss hearts sit (up to 3). Placed with the Dragon Heart asset; missing = the game picks random spots.
+  heartSpots?: [number, number, number][];
   customZombies?: CustomZombieConfig[];
   // Which zombies spawn on this map. Each entry is a built-in type ('normal','runner','tank','inferno','parasite','crawler','brute')
   // or the id of a custom zombie (customZombies[].id). weight = share of spawns (any positive numbers).
@@ -416,6 +418,10 @@ export interface EmblemLayer {
   hollow?: boolean;
   outlineThickness?: number;
   outlineColor?: string;
+  flipX?: boolean;
+  flipY?: boolean;
+  /** glow around the shape */
+  glow?: boolean;
 }
 
 export interface ShopItems {

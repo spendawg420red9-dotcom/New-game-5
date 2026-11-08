@@ -7,13 +7,14 @@ import { MapConfig, MapObject } from './types';
 //   ramp      a slope. Rises toward the piece's local +Z (turn it with the Angle buttons)
 //   stairs    like a ramp but made of steps
 //   hill      a smooth rounded mound (size = width x height x depth)
+//   ladder    climb it: walk into it and push forward to go up, back to come down
 //   pit       a hole in the floor (a basement / underground room). Depth = the Height number.
 //
 // Maps that use none of these (and have no void floor) get `active: false`, and the game skips every
 // bit of this code, so older maps run exactly as before and cost nothing.
 // ---------------------------------------------------------------------------
 
-export const TERRAIN_TYPES: MapObject['type'][] = ['platform', 'ramp', 'stairs', 'hill', 'pit'];
+export const TERRAIN_TYPES: MapObject['type'][] = ['platform', 'ramp', 'stairs', 'hill', 'pit', 'ladder'];
 export const isTerrainType = (t: string): boolean => (TERRAIN_TYPES as string[]).includes(t);
 
 /** How high you can step up while walking (stairs, kerbs). Anything taller blocks you like a wall. */
@@ -61,13 +62,15 @@ export interface Terrain {
   ceilingAt: (x: number, z: number, feetY: number) => number;
   /** Is there any floor here at all? (false over a void) */
   hasFloor: (x: number, z: number) => boolean;
+  /** Are the feet at a ladder you can climb? */
+  ladderAt: (x: number, z: number, feetY: number) => boolean;
   /** The pits, for cutting holes in the floor */
   pits: Pit[];
 }
 
 const EMPTY: Terrain = {
   active: false, half: DEFAULT_MAP_HALF, voidFloor: false, pieces: 0,
-  heightAt: () => 0, topAt: () => 0, blocked: () => false, ceilingAt: () => Infinity, hasFloor: () => true, pits: [],
+  heightAt: () => 0, topAt: () => 0, blocked: () => false, ceilingAt: () => Infinity, hasFloor: () => true, ladderAt: () => false, pits: [],
 };
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -132,6 +135,7 @@ export const buildTerrain = (map: MapConfig | undefined | null): Terrain => {
   const voidFloor = map.floorMode === 'none';
   const pieces: Piece[] = [];
   const pits: Pit[] = [];
+  const ladders: { cx: number; cz: number; cs: number; sn: number; hw: number; hd: number; bottom: number; top: number }[] = [];
   for (const o of map.objects || []) {
     if (!o || !o.args) continue;
     if (o.type === 'pit') {
@@ -139,13 +143,19 @@ export const buildTerrain = (map: MapConfig | undefined | null): Terrain => {
       if (!(w > 0) || !(h > 0) || !(d > 0)) continue;
       const rot = o.rotation?.[1] || 0;
       pits.push({ src: o, cx: o.pos[0], cz: o.pos[2], cs: Math.cos(rot), sn: Math.sin(rot), hw: w / 2, hd: d / 2, depth: h });
+    } else if (o.type === 'ladder') {
+      const [w, h, d] = o.args;
+      if (w > 0 && h > 0 && d > 0) {
+        const rot = o.rotation?.[1] || 0;
+        ladders.push({ cx: o.pos[0], cz: o.pos[2], cs: Math.cos(rot), sn: Math.sin(rot), hw: w / 2, hd: d / 2, bottom: o.pos[1] - h / 2, top: o.pos[1] + h / 2 });
+      }
     } else if (isTerrainType(o.type)) {
       const p = makePiece(o);
       if (p) pieces.push(p);
     }
   }
   const half = typeof map.mapSize === 'number' && map.mapSize > 5 ? map.mapSize : DEFAULT_MAP_HALF;
-  if (pieces.length === 0 && pits.length === 0 && !voidFloor) return { ...EMPTY, half };
+  if (pieces.length === 0 && pits.length === 0 && ladders.length === 0 && !voidFloor) return { ...EMPTY, half };
 
   // Level of the plain floor at x,z. `shrink` pulls the pit walls inward (used so nobody clips into a pit wall).
   const baseAt = (x: number, z: number, shrink: number): number => {
@@ -204,7 +214,19 @@ export const buildTerrain = (map: MapConfig | undefined | null): Terrain => {
 
   const hasFloor: Terrain['hasFloor'] = (x, z) => heightAt(x, z, 1e6, 0) > NO_FLOOR / 2;
 
-  return { active: true, half, voidFloor, pieces: pieces.length, heightAt, topAt, blocked, ceilingAt, hasFloor, pits };
+  // Ladders: stand within arm's reach of one (about a metre in front of it) with your feet along its length
+  const ladderAt: Terrain['ladderAt'] = (x, z, feetY) => {
+    for (let i = 0; i < ladders.length; i++) {
+      const l = ladders[i];
+      if (feetY < l.bottom - 0.4 || feetY > l.top + 0.1) continue;
+      const dx = x - l.cx, dz = z - l.cz;
+      const lx = dx * l.cs - dz * l.sn, lz = dx * l.sn + dz * l.cs;
+      if (Math.abs(lx) <= l.hw + 0.5 && Math.abs(lz) <= l.hd + 1.0) return true;
+    }
+    return false;
+  };
+
+  return { active: true, half, voidFloor, pieces: pieces.length, heightAt, topAt, blocked, ceilingAt, hasFloor, ladderAt, pits };
 };
 
 /** Playable half-size of a map (what the builder, edge walls and zombie spawning use). */
