@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { MapObject } from '../types';
-import { stairCount, NO_FLOOR } from '../terrain';
+import { stairCount, NO_FLOOR, hillK, rampT } from '../terrain';
 import { getProcTexture, isProcTexture, procName } from '../proceduralTextures';
 
 // One texture tile covers this many metres. Geometry UVs are in tiles, so every piece shares ONE GPU texture per look.
@@ -44,12 +44,13 @@ const remember = (key: string, make: () => THREE.BufferGeometry) => {
 };
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
-const rampGeometry = (w: number, h: number, d: number) => remember(`ramp:${r2(w)}:${r2(h)}:${r2(d)}`, () => {
-  // Triangle in the (z, y) plane: low at -z, high at +z, then pulled sideways to the full width.
+const rampGeometry = (w: number, h: number, d: number, label?: string) => remember(`ramp:${label || ''}:${r2(w)}:${r2(h)}:${r2(d)}`, () => {
+  // Profile in the (z, y) plane: low at -z, high at +z, then pulled sideways to the full width.
   const shape = new THREE.Shape();
   shape.moveTo(-d / 2, -h / 2);
   shape.lineTo(d / 2, -h / 2);
-  shape.lineTo(d / 2, h / 2);
+  const n = label === 'scurve' || label === 'quarter' ? 24 : 1;
+  for (let i = n; i >= 0; i--) { const t = i / n; shape.lineTo(-d / 2 + d * t, -h / 2 + h * rampT(label, t)); }
   shape.closePath();
   const g = new THREE.ExtrudeGeometry(shape, { depth: w, bevelEnabled: false, steps: 1 });
   g.rotateY(-Math.PI / 2);
@@ -72,20 +73,26 @@ const stairsGeometry = (w: number, h: number, d: number) => remember(`stairs:${r
   return merged;
 });
 
-const hillGeometry = (w: number, h: number, d: number) => remember(`hill:${r2(w)}:${r2(h)}:${r2(d)}`, () => {
+const hillGeometry = (w: number, h: number, d: number, label?: string, bowl = false) => remember(`${bowl ? 'bowl' : 'hill'}:${label || ''}:${r2(w)}:${r2(h)}:${r2(d)}`, () => {
   // Round grid of rings: the outer ring sits exactly at the bottom, so the hill melts into the floor with no flicker.
-  const rings = Math.max(8, Math.min(22, Math.round(Math.max(w, d) / 4)));
-  const segs = Math.max(20, Math.min(56, rings * 3));
-  const pos: number[] = [0, h / 2, 0];
+  // A bowl is the same grid turned upside down (a round dent instead of a bump).
+  const rings = Math.max(10, Math.min(28, Math.round(Math.max(w, d) / 3)));
+  const segs = bowl ? 48 : Math.max(24, Math.min(64, rings * 3));
+  const yAt = (r: number) => (bowl ? h / 2 - h * (1 - r * r) : -h / 2 + h * hillK(label, r * r));
+  const pos: number[] = [0, yAt(0), 0];
   const uvs: number[] = [0, 0];
+  // texture coordinates follow the surface (arc length), so steep slopes are not smeared
+  const Rm = Math.max(0.1, (w + d) / 4);
+  let arc = 0, prevR = 0, prevY = yAt(0);
   for (let i = 1; i <= rings; i++) {
     const r = i / rings;
-    const k = 1 - r * r;
-    const y = -h / 2 + h * k * k;
+    const y = yAt(r);
+    arc += Math.hypot((r - prevR) * Rm, y - prevY);
+    prevR = r; prevY = y;
     for (let j = 0; j < segs; j++) {
       const a = (j / segs) * Math.PI * 2;
       pos.push(Math.cos(a) * r * (w / 2), y, Math.sin(a) * r * (d / 2));
-      uvs.push((Math.cos(a) * r * (w / 2)) / TILE, (Math.sin(a) * r * (d / 2)) / TILE);
+      uvs.push((Math.cos(a) * arc * (w / 2 / Rm)) / TILE, (Math.sin(a) * arc * (d / 2 / Rm)) / TILE);
     }
   }
   const idx: number[] = [];
@@ -103,6 +110,15 @@ const hillGeometry = (w: number, h: number, d: number) => remember(`hill:${r2(w)
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   g.setIndex(idx);
   g.computeVertexNormals();
+  return g;
+});
+
+const roundGeometry = (w: number, h: number, d: number) => remember(`round:${r2(w)}:${r2(h)}:${r2(d)}`, () => {
+  const g = new THREE.CylinderGeometry(0.5, 0.5, 1, 40, 1);
+  g.scale(w, h, d);
+  const uv = g.getAttribute('uv') as THREE.BufferAttribute;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, (uv.getX(i) * Math.PI * (w + d) / 2) / TILE, (uv.getY(i) * Math.max(h, 1)) / TILE);
+  uv.needsUpdate = true;
   return g;
 });
 
@@ -133,8 +149,8 @@ export const TerrainObject = React.memo(({ obj, selected, onClick }: {
     metalness: obj.metalness ?? 0.05,
     emissive: obj.emissive ? new THREE.Color(obj.emissive) : new THREE.Color('#000000'),
     emissiveIntensity: obj.emissive ? (obj.emissiveIntensity ?? 1) : 0,
-    side: obj.type === 'hill' ? THREE.DoubleSide : THREE.FrontSide,
-  }), [color, proc, obj.roughness, obj.metalness, obj.emissive, obj.emissiveIntensity, obj.type]);
+    side: obj.type === 'hill' || obj.label === 'bowl' ? THREE.DoubleSide : THREE.FrontSide,
+  }), [color, proc, obj.roughness, obj.metalness, obj.emissive, obj.emissiveIntensity, obj.type, obj.label]);
   React.useEffect(() => () => mat.dispose(), [mat]);
 
   // A pit is always drawn from the floor line down (its centre is half the depth below ground)
@@ -143,15 +159,17 @@ export const TerrainObject = React.memo(({ obj, selected, onClick }: {
 
   let body: React.ReactNode = null;
   if (obj.type === 'platform') {
-    body = <mesh geometry={boxGeometry(w, h, d)} material={mat} />;
+    body = <mesh geometry={obj.label === 'round' ? roundGeometry(w, h, d) : boxGeometry(w, h, d)} material={mat} />;
   } else if (obj.type === 'ramp') {
-    body = <mesh geometry={rampGeometry(w, h, d)} material={mat} />;
+    body = <mesh geometry={rampGeometry(w, h, d, obj.label)} material={mat} />;
   } else if (obj.type === 'stairs') {
     body = <mesh geometry={stairsGeometry(w, h, d)} material={mat} />;
   } else if (obj.type === 'hill') {
-    body = <mesh geometry={hillGeometry(w, h, d)} material={mat} />;
+    body = <mesh geometry={hillGeometry(w, h, d, obj.label)} material={mat} />;
   } else if (obj.type === 'ladder') {
     body = <mesh geometry={ladderGeometry(w, h, d)} material={mat} />;
+  } else if (obj.type === 'pit' && obj.label === 'bowl') {
+    body = <mesh geometry={hillGeometry(w, h, d, 'bowl', true)} material={mat} />;
   } else if (obj.type === 'pit') {
     // The pit object is centred on its middle: pos.y = -depth/2. Floor, then four walls that line the hole in the ground.
     const t = 0.6;
@@ -183,8 +201,8 @@ export const TerrainObject = React.memo(({ obj, selected, onClick }: {
  * The floor with holes cut for the pits. One flat shape, cheap to draw.
  * half = half size of the map, tile = metres per texture tile.
  */
-export const useFloorGeometry = (half: number, pits: { cx: number; cz: number; cs: number; sn: number; hw: number; hd: number }[]) => {
-  const key = pits.map(p => `${p.cx},${p.cz},${p.cs.toFixed(3)},${p.sn.toFixed(3)},${p.hw},${p.hd}`).join('|');
+export const useFloorGeometry = (half: number, pits: { cx: number; cz: number; cs: number; sn: number; hw: number; hd: number; bowl?: boolean }[]) => {
+  const key = pits.map(p => `${p.cx},${p.cz},${p.cs.toFixed(3)},${p.sn.toFixed(3)},${p.hw},${p.hd},${p.bowl ? 'b' : ''}`).join('|');
   return useMemo(() => {
     if (!half) return null;
     const s = new THREE.Shape();
@@ -196,7 +214,9 @@ export const useFloorGeometry = (half: number, pits: { cx: number; cz: number; c
       const reachZ = Math.abs(p.sn) * p.hw + Math.abs(p.cs) * p.hd;
       if (Math.abs(p.cx) + reach >= half - 0.01 || Math.abs(p.cz) + reachZ >= half - 0.01) return;
       const hole = new THREE.Path();
-      const corners: [number, number][] = [[-p.hw, -p.hd], [p.hw, -p.hd], [p.hw, p.hd], [-p.hw, p.hd]];
+      const corners: [number, number][] = p.bowl
+        ? Array.from({ length: 48 }, (_, i) => { const a = (i / 48) * Math.PI * 2; return [Math.cos(a) * p.hw, Math.sin(a) * p.hd] as [number, number]; })
+        : [[-p.hw, -p.hd], [p.hw, -p.hd], [p.hw, p.hd], [-p.hw, p.hd]];
       const pts = corners.map(([lx, lz]) => {
         const wx = p.cx + lx * p.cs + lz * p.sn;
         const wz = p.cz - lx * p.sn + lz * p.cs;

@@ -480,6 +480,7 @@ export const PlayerAvatar: React.FC<{
           <Suspense fallback={null}>
             {avatarId === 'biohazard_armor' && <PosedGLBBody url="/assets/r9s/biohazard_armor.glb" height={h} renderWeapon={renderWeapon} isMoving={isMoving} isShooting={isShootingRef || noShoot} />}
             {avatarId === 'zombie_pickle' && <PosedGLBBody url="/assets/zombies/zombie_pickle.glb" height={h} renderWeapon={renderWeapon} isMoving={isMoving} isShooting={isShootingRef || noShoot} />}
+            {avatarId.startsWith('user:') && <PosedGLBBody url={resolveModelUrl(avatarId)} height={h} renderWeapon={renderWeapon} isMoving={isMoving} isShooting={isShootingRef || noShoot} />}
             {zombieVariant && <Normalized height={h}><Zombie3D variant={zombieVariant as any} /></Normalized>}
             {avatarId === 'boss_dragon' && <Normalized height={h}><Dragon3D /></Normalized>}
             {avatarId === 'boss_elephant' && <Normalized height={h}><Elephant3D /></Normalized>}

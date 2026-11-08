@@ -5,7 +5,11 @@ import { Canvas } from '@react-three/fiber';
 import { GameStatus, PlayerStats, PowerUpType, ScoreEntry, HUDSettings, KeybindSettings, GamepadSettings, GameSettings, WeaponCamo, Achievement, Progression, PlayerScore, WeaponAttachment, ZombieType, GameMode, MultiplayerMode, ZombieData, DEFAULT_PROFILE, EmblemLayer, MAX_LEVEL, MapConfig, CommunityMapEntry } from './types';
 import { CALLING_CARDS, isCallingCardUnlocked } from './callingCards';
 import { Joystick } from './components/Joystick';
-import { Scene } from './components/Scene';
+import { Scene, WEAPONS_STATS, CAMO_PROPS } from './components/Scene';
+import { applyCustomContent, loadCustomCamos, customCamoId, isCustomGun } from './customContent';
+import { CreatorStudio } from './components/CreatorStudio';
+import { MyModesPanel } from './components/MyModesPanel';
+import { AchievementEffect, loadAchievementFx } from './components/AchievementEffect';
 import { Minimap } from './components/Minimap';
 import { CrosshairView, CrosshairPanel, HudVisibilityPanel, EyeIcon } from './components/HudControls';
 import {
@@ -18,7 +22,8 @@ import ShopItemPreview from './components/ShopItemPreview';
 import { Player3DViewer as Player3DViewerComponent } from './components/Player3DViewer';
 import { MOVE_DURATION_MS } from './moves';
 
-import { useEnemyGlbUrl, EnemyGLB } from './components/EnemyModelViewer';
+import { useEnemyGlbUrl, EnemyGLB, setEnemyGlbOverride, hasEnemyGlbOverride } from './components/EnemyModelViewer';
+import { addUserModel } from './userModels';
 import { GLBBoundary } from './components/GLBProp';
 import { useTexture, OrbitControls, PerspectiveCamera, Box, Sphere, Float, Stage } from '@react-three/drei';
 import { getRoundLore } from './services/geminiService';
@@ -339,6 +344,7 @@ const getActiveAttachments = (weaponName: string, playerLevel: number, attachmen
   return attachments[baseWeapon] || [];
 };
 
+applyCustomContent(WEAPONS, WEAPONS_STATS, CAMO_PROPS);
 const SORTED_WEAPONS = Object.entries(WEAPONS).sort((a, b) => {
   const isPapA = isPapWeapon(a[0]);
   const isPapB = isPapWeapon(b[0]);
@@ -1051,6 +1057,8 @@ const getWeaponStatsWithAttachments = (baseStats: any, attachments: WeaponAttach
 };
 
 const EMBLEM_SHAPES = [
+  '◆', '◼', '◐', '◑', '◒', '◓', '▬', '▮', '⬟', '⬢', '⬡', '⬠', '✚', '✖', '➤', '➜', '❖', '✪', '✯', '✸', '❂', '☯', '☮', '☪', '✡', '⚜', '♛', '♚', '♞', '♜',
+  '🦅', '🐺', '🦁', '🐍', '🦈', '🐉', '🦇', '🕷', '🐻', '🦂', '🦖', '🐗', '🦉', '🐯', '🐙', '🦴', '👑', '🎖', '🏆', '🥇', '🔰', '🧠', '👁', '🫀', '🦾', '🪖',
   '★', '●', '■', '▲', '✦', '♥', '♠', '♣', '♦', '☠', '☢', '☣', '⚡', '🔥', '⚔', '🛡', '💀', '👽', '👻', '🤖',
   '🌙', '⭐', '🌟', '✨', '☄', '☀', '☁', '❄', '💧', '🌊', '🔥', '🌪', '🌈', '☂', '☔', '⚡', '⛄', '🪐', '🌍', '🌎',
   '🌏', '🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘', '🚀', '🛸', '🚁', '🛶', '⛵', '🚤', '🛥', '🛳', '⛴', '🚢', '⚓',
@@ -1080,6 +1088,33 @@ const EmblemEditor = ({ initialEmblem, onSave, onClose, unlockAchievement }: { i
   const [activeTab, setActiveTab] = useState<'canvas' | 'layers' | 'properties' | 'library'>('canvas');
   const [newEmblemName, setNewEmblemName] = useState<string>('Custom Emblem');
   const [shareCode, setShareCode] = useState<string>('');
+  // Undo / redo: remembers the canvas each time it settles (0.4s after the last change)
+  const undoStack = useRef<EmblemLayer[][]>([]);
+  const redoStack = useRef<EmblemLayer[][]>([]);
+  const settled = useRef<EmblemLayer[]>(layers);
+  const skipHistory = useRef(false);
+  useEffect(() => {
+    if (skipHistory.current) { skipHistory.current = false; settled.current = layers; return; }
+    const t = setTimeout(() => {
+      if (settled.current !== layers) {
+        undoStack.current.push(settled.current);
+        if (undoStack.current.length > 60) undoStack.current.shift();
+        redoStack.current = [];
+        settled.current = layers;
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [layers]);
+  const undoLayers = () => {
+    const prev = undoStack.current.pop();
+    if (!prev) return;
+    redoStack.current.push(layers); skipHistory.current = true; setLayers(prev);
+  };
+  const redoLayers = () => {
+    const nxt = redoStack.current.pop();
+    if (!nxt) return;
+    undoStack.current.push(layers); skipHistory.current = true; setLayers(nxt);
+  };
 
   const [savedEmblems, setSavedEmblems] = useState<{ id: string; name: string; layers: EmblemLayer[] }[]>(() => {
     try {
@@ -1524,6 +1559,8 @@ const EmblemEditor = ({ initialEmblem, onSave, onClose, unlockAchievement }: { i
             {/* Quick tools: the things people reach for most, always in reach */}
             <div className="mt-3 flex flex-wrap justify-center gap-1.5 max-w-[340px] z-20">
               {[
+                { t: '↶ Undo', f: () => undoLayers() },
+                { t: '↷ Redo', f: () => redoLayers() },
                 { t: '➕ Add', f: () => addLayer() },
                 { t: '⧉ Copy', f: () => selectedLayerId && duplicateLayer(selectedLayerId) },
                 { t: '⇋ Flip', f: () => { const l = layers.find(x => x.id === selectedLayerId); if (l) updateLayer(l.id, { flipX: !l.flipX }); } },
@@ -1541,6 +1578,8 @@ const EmblemEditor = ({ initialEmblem, onSave, onClose, unlockAchievement }: { i
               <span className="w-full text-center text-[9px] font-bold text-white/40 uppercase tracking-wider">One-tap starters (replaces the canvas)</span>
               {([
                 { n: 'Skull Crest', l: [['🛡', '#334155', 0, 6, 1.6], ['☠', '#f8fafc', 0, -4, 1.0], ['★', '#facc15', 0, 52, 0.45]] },
+                { n: 'Wolf Shield', l: [['🛡', '#1e293b', 0, 0, 1.9], ['🐺', '#e2e8f0', 0, -2, 1.0], ['✦', '#38bdf8', 0, 56, 0.4]] },
+                { n: 'Crown Skull', l: [['●', '#7f1d1d', 0, 0, 1.8], ['☠', '#fafafa', 0, 6, 1.0], ['👑', '#facc15', 0, -52, 0.8]] },
                 { n: 'Bolt Badge', l: [['●', '#7c3aed', 0, 0, 1.8], ['⚡', '#facc15', 0, 0, 1.2]] },
                 { n: 'Heart Wings', l: [['♥', '#ef4444', 0, 0, 1.1], ['✦', '#fde68a', -62, -10, 0.7], ['✦', '#fde68a', 62, -10, 0.7]] },
                 { n: 'Flame Star', l: [['★', '#f97316', 0, 0, 1.7], ['🔥', '#ef4444', 0, 8, 0.9]] },
@@ -2368,6 +2407,7 @@ const PlayerProfileModal = ({ progression, onClose, onUpdateProfile, unlockAchie
 const App: React.FC = () => {
   const [status, setStatus] = useState<GameStatus>(GameStatus.START);
   const [selectedEnemyFor3D, setSelectedEnemyFor3D] = useState<string | null>(null);
+  const [enemyGlbTick, setEnemyGlbTick] = useState(0);
   const [hoveredEnemyPreview, setHoveredEnemyPreview] = useState<string | null>(null);
   const [thirdPersonMode, setThirdPersonMode] = useState(false);
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -2415,6 +2455,13 @@ const App: React.FC = () => {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [syncedZombies, setSyncedZombies] = useState<any[] | null>(null);
   
+  const [ctfMsg, setCtfMsg] = useState('');
+  useEffect(() => {
+    let t: any;
+    const h = (e: Event) => { setCtfMsg(String((e as CustomEvent).detail || '')); clearTimeout(t); t = setTimeout(() => setCtfMsg(''), 3500); };
+    window.addEventListener('ctf-msg', h);
+    return () => { window.removeEventListener('ctf-msg', h); clearTimeout(t); };
+  }, []);
   const [hardpointTimer, setHardpointTimer] = useState(60);
   const [activeHardpointIdx, setActiveHardpointIdx] = useState(0);
   const [isPlayOfTheGame, setIsPlayOfTheGame] = useState(false);
@@ -2543,7 +2590,7 @@ const App: React.FC = () => {
           show: true 
         });
         soundService.playPowerUpPickup();
-        setTimeout(() => setAchievementNotif(prev => ({ ...prev, show: false })), 5000);
+        setTimeout(() => setAchievementNotif(prev => ({ ...prev, show: false })), Math.max(2000, loadAchievementFx().seconds * 1000));
       }
       
       return newP;
@@ -2755,6 +2802,7 @@ const App: React.FC = () => {
   const [isBoxCycling, setIsBoxCycling] = useState(false);
   const [cyclingWeapon, setCyclingWeapon] = useState<string | null>(null);
   const [infoTab, setInfoTab] = useState<'guns' | 'perks' | 'bombs' | 'powerups' | 'enemies' | 'progression'>('guns');
+  const [showStudio, setShowStudio] = useState(false);
   const [shopTab, setShopTab] = useState<'callingCards' | 'camos' | 'clothes' | 'finisherMoves' | 'hats' | 'glasses' | 'masks' | 'helmets' | 'chest' | 'boots' | 'gloves' | 'danceMoves'>('callingCards');
   const [previewItem, setPreviewItem] = useState<{ item: any, shopTab: string } | null>(null);
 
@@ -7287,6 +7335,16 @@ const App: React.FC = () => {
           {status === GameStatus.PLAYING && (
             <>
               <HardpointHUD activeHardpoint={hardpoints.length > 0 ? hardpoints[activeHardpointIdx] : null} />
+              {customGameConfig.multiplayerMode === 'ctf' && (
+                <div className="absolute top-2.5 left-1/2 -translate-x-1/2 z-[40] pointer-events-none flex flex-col items-center gap-1">
+                  <div className="bg-black/90 border border-white/20 rounded px-3 py-1 flex items-center gap-3 font-mono font-black text-sm">
+                    <span className="text-emerald-400">T1 {team1Score}</span>
+                    <span className="text-white/40 text-[9px] uppercase tracking-widest">CTF · first to {customGameConfig.scoreLimit}</span>
+                    <span className="text-red-400">{team2Score} T2</span>
+                  </div>
+                  {ctfMsg && <div className="bg-yellow-500/90 text-black font-black text-xs uppercase px-3 py-1 rounded">{ctfMsg}</div>}
+                </div>
+              )}
               <GunGameHUD />
             </>
           )}
@@ -9078,7 +9136,7 @@ const App: React.FC = () => {
                     <div className="pt-4 border-t border-white/10">
                       <h3 className="text-sm font-black text-white/40 uppercase tracking-widest mb-3 text-left">Weapon Camos</h3>
                       <div className="grid grid-cols-4 gap-2">
-                        {(['none', 'gilded', 'crystal', 'void_matter', 'sakura', 'wyvern', 'frost', 'lava', 'galaxy', 'crimson_hex', 'abyss', 'stellar', 'prism'] as WeaponCamo[]).filter(camo => camo === 'none' || progression.profile?.shopItems?.camos?.includes(camo)).map((camo, i) => (
+                        {([...['none', 'gilded', 'crystal', 'void_matter', 'sakura', 'wyvern', 'frost', 'lava', 'galaxy', 'crimson_hex', 'abyss', 'stellar', 'prism'], ...loadCustomCamos().map(c => customCamoId(c.id))] as WeaponCamo[]).filter(camo => camo === 'none' || camo.startsWith('custom_') || progression.profile?.shopItems?.camos?.includes(camo)).map((camo, i) => (
                           <button 
                             key={camo}
                             id={`menu-item-${22 + teleportCount + 3 + 25 + Object.keys(WEAPONS).length + i}`}
@@ -9092,7 +9150,7 @@ const App: React.FC = () => {
                                 : 'border-white/10 opacity-70 hover:opacity-100 hover:scale-105'
                             } ${selectedMenuIndex === 22 + teleportCount + 3 + 25 + Object.keys(WEAPONS).length + i ? 'ring-4 ring-white scale-110 z-20' : ''}`}
                           >
-                            <div className={`absolute inset-0 ${
+                            <div style={camo.startsWith('custom_') ? { background: (CAMO_PROPS[camo]?.color || '#444'), boxShadow: `inset 0 0 18px ${CAMO_PROPS[camo]?.emissive || 'transparent'}` } : undefined} className={`absolute inset-0 ${
                               camo === 'none' ? 'bg-stone-800' :
                               camo === 'gilded' ? 'bg-gradient-to-br from-yellow-300 via-yellow-500 to-yellow-700' :
                               camo === 'crystal' ? 'bg-gradient-to-br from-cyan-300 via-blue-400 to-blue-600' :
@@ -9110,7 +9168,7 @@ const App: React.FC = () => {
                             }`} />
                             <div className="absolute bottom-0 left-0 right-0 bg-black/60 py-0.5 px-1 z-20">
                               <span className="text-[8px] font-black uppercase text-white/90 block truncate text-center">
-                                {camo.replace(/_/g, ' ')}
+                                {camo.startsWith('custom_') ? (loadCustomCamos().find(c => customCamoId(c.id) === camo)?.name || 'custom') : camo.replace(/_/g, ' ')}
                               </span>
                             </div>
                             {/* Shine effect */}
@@ -9212,9 +9270,9 @@ const App: React.FC = () => {
            <div className="max-w-lg w-full text-center space-y-8 relative z-10 my-auto py-8">
               <div className="space-y-1">
                 <div className="text-red-600 font-black italic uppercase tracking-widest text-lg drop-shadow-lg">Z-Town Red9&Spendawg</div>
-                {customGameConfig.multiplayerMode === 'hard_point' ? (
+                {(customGameConfig.multiplayerMode === 'hard_point' || customGameConfig.multiplayerMode === 'ctf') ? (
                    <div className="mt-4 p-4 bg-black/60 border border-blue-500/30 rounded-sm">
-                      <div className="text-blue-400 font-black italic uppercase tracking-widest text-xs mb-2">Hardpoint Match Results</div>
+                      <div className="text-blue-400 font-black italic uppercase tracking-widest text-xs mb-2">{customGameConfig.multiplayerMode === 'ctf' ? 'Capture The Flag Results' : 'Hardpoint Match Results'}</div>
                       <div className="flex items-center justify-center gap-6">
                         <div className="flex flex-col items-center">
                           <span className="text-white/40 text-[9px] uppercase font-black">TEAM 1</span>
@@ -9227,7 +9285,7 @@ const App: React.FC = () => {
                         </div>
                       </div>
                       <div className="text-yellow-400 font-black italic uppercase tracking-wider text-sm mt-3 animate-pulse">
-                        {team1Score >= 100 ? 'TEAM 1 VICTORIOUS!' : team2Score >= 100 ? 'TEAM 2 VICTORIOUS!' : team1Score > team2Score ? 'TEAM 1 SECTOR CONTROLLED' : 'TEAM 2 SECTOR CONTROLLED'}
+                        {team1Score >= (customGameConfig.multiplayerMode === 'ctf' ? customGameConfig.scoreLimit : 100) ? 'TEAM 1 VICTORIOUS!' : team2Score >= (customGameConfig.multiplayerMode === 'ctf' ? customGameConfig.scoreLimit : 100) ? 'TEAM 2 VICTORIOUS!' : team1Score > team2Score ? 'TEAM 1 SECTOR CONTROLLED' : 'TEAM 2 SECTOR CONTROLLED'}
                       </div>
                    </div>
                 ) : (
@@ -10466,7 +10524,7 @@ const App: React.FC = () => {
 
       {status === GameStatus.START && (
         <div className="absolute inset-0 z-50 flex flex-col items-center bg-black/95 p-8 overflow-y-auto">
-          {achievementNotif.show && (
+          {false && achievementNotif.show && (
             <div className="fixed top-12 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-4 bg-black/80 backdrop-blur-xl border-2 border-purple-500/50 p-4 rounded-sm shadow-[0_0_30px_rgba(168,85,247,0.4)] animate-in slide-in-from-top duration-500 pointer-events-none">
               <div className="w-12 h-12 rounded-full bg-purple-500/20 flex items-center justify-center text-2xl shadow-[0_0_15px_rgba(168,85,247,0.5)] shrink-0">
                 {achievementNotif.icon}
@@ -10766,6 +10824,12 @@ const App: React.FC = () => {
                 >
                   <ShoppingCart size={20} className="text-pink-500 shrink-0" /> Shop
                 </button>
+                <button
+                  onClick={() => setShowStudio(true)}
+                  className="col-span-2 py-5 bg-amber-900/50 border border-amber-500/30 text-white font-black text-2xl rounded-sm active:scale-95 flex items-center justify-center gap-3 uppercase italic transition-all"
+                >
+                  <Wrench size={24} className="text-amber-400" /> Creator Studio
+                </button>
                 <button 
                   id={`menu-item-${MAPS.length + 8}`}
                   onClick={() => setStatus(GameStatus.CUSTOM_GAME)} 
@@ -10791,6 +10855,8 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+      <AchievementEffect show={achievementNotif.show} name={achievementNotif.name} icon={achievementNotif.icon} fx={loadAchievementFx()} />
+      {showStudio && <CreatorStudio baseGuns={Object.keys(WEAPONS).filter(k => !isCustomGun(k))} onClose={() => setShowStudio(false)} onSaved={() => window.location.reload()} />}
       {status === GameStatus.SHOP && (
         <div className="absolute inset-0 z-50 flex flex-col items-center bg-black/95 p-8 overflow-y-auto">
           <div className="max-w-6xl w-full space-y-8 animate-in slide-in-from-bottom duration-500 py-8">
@@ -11728,20 +11794,22 @@ const App: React.FC = () => {
 
                   {customGameConfig.gameMode === 'multiplayer' && (
                     <>
+                    <MyModesPanel config={customGameConfig} onLoad={(c) => setCustomGameConfig(prev => ({ ...prev, ...c }))} />
                     <div>
                       <label className="block text-white/60 font-bold uppercase text-xs mb-2">Game Type</label>
                       <button
                         onClick={() => {
-                            const modes: MultiplayerMode[] = ['ffa', 'tdm', 'gun_game', 'hard_point'];
+                            const modes: MultiplayerMode[] = ['ffa', 'tdm', 'gun_game', 'hard_point', 'ctf'];
                             const nextMode = modes[(modes.indexOf(customGameConfig.multiplayerMode || 'ffa') + 1) % modes.length];
                             setCustomGameConfig(prev => ({ 
                                 ...prev, 
                                 multiplayerMode: nextMode,
-                                teamMode: nextMode === 'tdm' || nextMode === 'hard_point'
+                                teamMode: nextMode === 'tdm' || nextMode === 'hard_point' || nextMode === 'ctf',
+                                scoreLimit: nextMode === 'ctf' ? 3 : (prev.multiplayerMode === 'ctf' ? 35 : prev.scoreLimit)
                             }));
                         }}
                         className={`w-full p-3 rounded-sm font-black italic uppercase transition-colors border ${
-                          ['tdm', 'gun_game', 'hard_point'].includes(customGameConfig.multiplayerMode || '')
+                          ['tdm', 'gun_game', 'hard_point', 'ctf'].includes(customGameConfig.multiplayerMode || '')
                             ? 'bg-purple-500 border-purple-400 text-white' 
                             : 'bg-black/50 border-white/10 text-white/40 hover:bg-white/5'
                         }`}
@@ -11749,10 +11817,11 @@ const App: React.FC = () => {
                         {customGameConfig.multiplayerMode === 'tdm' ? 'Team Deathmatch' : 
                          customGameConfig.multiplayerMode === 'gun_game' ? 'Gun Game' :
                          customGameConfig.multiplayerMode === 'hard_point' ? 'Hard Point' :
+                         customGameConfig.multiplayerMode === 'ctf' ? 'Capture The Flag' :
                          'Free For All'}
                       </button>
                     </div>
-                    {customGameConfig.gameMode === 'multiplayer' && ['tdm', 'hard_point'].includes(customGameConfig.multiplayerMode || '') && (
+                    {customGameConfig.gameMode === 'multiplayer' && ['tdm', 'hard_point', 'ctf'].includes(customGameConfig.multiplayerMode || '') && (
                       <>
                         <div>
                           <label className="block text-white/60 font-bold uppercase text-xs mb-2">Your Team</label>
@@ -12623,7 +12692,21 @@ const App: React.FC = () => {
                   </div>
                 </div>
                 
-                <Enemy3DViewer type={selectedEnemyFor3D} />
+                <Enemy3DViewer key={`${selectedEnemyFor3D}-${enemyGlbTick}`} type={selectedEnemyFor3D} />
+                <div className="absolute top-4 right-4 z-10 flex flex-col gap-2">
+                  <label className="bg-emerald-600 px-3 py-2 text-[10px] font-black uppercase text-white rounded-sm cursor-pointer text-center">
+                    Use my .glb
+                    <input type="file" accept=".glb" className="hidden" onChange={async (e) => {
+                      const f = e.target.files?.[0]; e.target.value = '';
+                      if (!f || !selectedEnemyFor3D) return;
+                      try { const m = await addUserModel(f, 'Props'); setEnemyGlbOverride(selectedEnemyFor3D, m.id); setEnemyGlbTick(t => t + 1); }
+                      catch (err: any) { alert(err?.message || 'Could not load that .glb'); }
+                    }} />
+                  </label>
+                  {hasEnemyGlbOverride(selectedEnemyFor3D) && (
+                    <button className="bg-white/10 px-3 py-2 text-[10px] font-black uppercase text-white rounded-sm" onClick={() => { setEnemyGlbOverride(selectedEnemyFor3D, null); setEnemyGlbTick(t => t + 1); }}>Reset model</button>
+                  )}
+                </div>
                 
                 <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex gap-4">
                   <div className="bg-black/60 backdrop-blur-md border border-white/10 px-4 py-2 rounded-full text-[10px] font-black text-white/80 uppercase flex items-center gap-2">

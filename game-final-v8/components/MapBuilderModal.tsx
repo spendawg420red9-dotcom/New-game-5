@@ -1,5 +1,5 @@
 import React, { useState, useRef, useMemo, useEffect, Suspense } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Box, Cylinder, Sphere, Cone, Plane, Text, Float, Torus, Grid as DreiGrid } from '@react-three/drei';
 import * as THREE from 'three';
 import { 
@@ -153,6 +153,58 @@ const Builder3DScene: React.FC<Builder3DSceneProps> = ({
     ctrl.update();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [camCmd?.n]);
+
+  // Keyboard flying: WASD / arrows slide the view, Q / E zoom, F jumps to the selected piece
+  const keysDown = useRef<Record<string, boolean>>({});
+  const selectedPos = useRef<[number, number, number] | null>(null);
+  selectedPos.current = selectedItem?.type === 'object' ? ((mapConfig.objects[selectedItem.index]?.pos as [number, number, number]) || null) : null;
+  useEffect(() => {
+    const typing = (el: EventTarget | null) => { const t = el as HTMLElement | null; return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable); };
+    const down = (e: KeyboardEvent) => {
+      if (typing(e.target)) return;
+      const k = e.key.toLowerCase();
+      if (k === 'f' && selectedPos.current && controlsRef.current) {
+        const c = controlsRef.current, p = selectedPos.current;
+        const off = c.object.position.clone().sub(c.target);
+        c.target.set(p[0], p[1], p[2]);
+        c.object.position.copy(c.target).add(off);
+        c.update();
+        return;
+      }
+      keysDown.current[k] = true;
+    };
+    const up = (e: KeyboardEvent) => { keysDown.current[e.key.toLowerCase()] = false; };
+    const clear = () => { keysDown.current = {}; };
+    window.addEventListener('keydown', down); window.addEventListener('keyup', up); window.addEventListener('blur', clear);
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); window.removeEventListener('blur', clear); };
+  }, []);
+  useFrame((_, dt) => {
+    const ctrl = controlsRef.current; if (!ctrl) return;
+    const K = keysDown.current;
+    const mx = (K['d'] || K['arrowright'] ? 1 : 0) - (K['a'] || K['arrowleft'] ? 1 : 0);
+    const mz = (K['w'] || K['arrowup'] ? 1 : 0) - (K['s'] || K['arrowdown'] ? 1 : 0);
+    const zm = (K['e'] ? 1 : 0) - (K['q'] ? 1 : 0);
+    if (!mx && !mz && !zm) return;
+    const cam = ctrl.object;
+    const dist = cam.position.distanceTo(ctrl.target);
+    const sp = Math.max(6, dist * 0.9) * Math.min(dt, 0.05) * (K['shift'] ? 2.5 : 1);
+    if (mx || mz) {
+      const fx = ctrl.target.x - cam.position.x, fz = ctrl.target.z - cam.position.z;
+      const fl = Math.hypot(fx, fz) || 1;
+      const dx = ((-fz / fl) * mx + (fx / fl) * mz) * sp; // right = (-fz, fx), forward = (fx, fz)
+      const dz = ((fx / fl) * mx + (fz / fl) * mz) * sp;
+      const lim = (mapConfig.mapSize || 150) + 20;
+      const nx = Math.max(-lim, Math.min(lim, ctrl.target.x + dx)) - ctrl.target.x;
+      const nz = Math.max(-lim, Math.min(lim, ctrl.target.z + dz)) - ctrl.target.z;
+      cam.position.x += nx; cam.position.z += nz; ctrl.target.x += nx; ctrl.target.z += nz;
+    }
+    if (zm) {
+      const dir = cam.position.clone().sub(ctrl.target);
+      dir.setLength(Math.min(Math.max(dir.length() * (1 - zm * 1.2 * Math.min(dt, 0.05)), 5), Math.max(250, (mapConfig.mapSize || 150) * 2.2)));
+      cam.position.copy(ctrl.target).add(dir);
+    }
+    ctrl.update();
+  });
 
   // Raycast to floor for placement
   const handleFloorClick = (e: any) => {

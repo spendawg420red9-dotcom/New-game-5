@@ -28,6 +28,25 @@ export const NO_FLOOR = -100000;
 /** Default half-size of a map (a 116 m wide square). */
 export const DEFAULT_MAP_HALF = 58;
 
+/** Height profile of a hill (0 at the rim, 1 at the top) for r2 = squared distance from the centre (0..1). The label picks the shape. */
+export const hillK = (label: string | undefined, r2: number): number => {
+  if (r2 >= 1) return 0;
+  switch (label) {
+    case 'mountain': { const r = Math.sqrt(r2); return Math.pow(1 - r, 1.35); }                 // pointed peak
+    case 'dome': return Math.pow(1 - r2, 0.6);                                                  // rounded, steep sides
+    case 'mesa': { const s = Math.min(1, (1 - Math.sqrt(r2)) / 0.4); return s * s * (3 - 2 * s); } // flat top, sloped sides
+    case 'ring': { const r = Math.sqrt(r2); const q = (r - 0.7) / 0.3; return Math.max(0, 1 - q * q); } // crater rim
+    default: { const k = 1 - r2; return k * k; }
+  }
+};
+/** Ramp profile: 0..1 along the ramp. 'scurve' eases in and out, 'quarter' is a skate quarter-pipe. */
+export const rampT = (label: string | undefined, t: number): number => {
+  const x = t < 0 ? 0 : t > 1 ? 1 : t;
+  if (label === 'scurve') return x * x * (3 - 2 * x);
+  if (label === 'quarter') return (1 - Math.sqrt(1 - x * x * 0.98)) / (1 - Math.sqrt(0.02));
+  return x;
+};
+
 const STAIR_STEP = 0.3; // visual + physical height of one stair
 
 export const stairCount = (height: number) => Math.max(2, Math.min(60, Math.ceil(Math.abs(height) / STAIR_STEP)));
@@ -43,6 +62,7 @@ interface Piece {
 
 interface Pit {
   src: MapObject;
+  bowl?: boolean;
   cx: number; cz: number; cs: number; sn: number; hw: number; hd: number; depth: number;
 }
 
@@ -64,13 +84,15 @@ export interface Terrain {
   hasFloor: (x: number, z: number) => boolean;
   /** Are the feet at a ladder you can climb? */
   ladderAt: (x: number, z: number, feetY: number) => boolean;
+  /** Like ladderAt but returns the ladder's bottom/top so the player can top-out or mount from above. */
+  ladderInfo: (x: number, z: number, feetY: number) => { bottom: number; top: number } | null;
   /** The pits, for cutting holes in the floor */
   pits: Pit[];
 }
 
 const EMPTY: Terrain = {
   active: false, half: DEFAULT_MAP_HALF, voidFloor: false, pieces: 0,
-  heightAt: () => 0, topAt: () => 0, blocked: () => false, ceilingAt: () => Infinity, hasFloor: () => true, ladderAt: () => false, pits: [],
+  heightAt: () => 0, topAt: () => 0, blocked: () => false, ceilingAt: () => Infinity, hasFloor: () => true, ladderAt: () => false, ladderInfo: () => null, pits: [],
 };
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -94,6 +116,7 @@ const makePiece = (o: MapObject): Piece | null => {
     top = (x, z, m) => {
       const dx = x - cx, dz = z - cz;
       const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
+      if (o.label === 'round') { const a = lx / (hw + m), b = lz / (hd + m); return a * a + b * b <= 1 ? high : NaN; }
       return Math.abs(lx) <= hw + m && Math.abs(lz) <= hd + m ? high : NaN;
     };
   } else if (o.type === 'ramp') {
@@ -101,7 +124,7 @@ const makePiece = (o: MapObject): Piece | null => {
       const dx = x - cx, dz = z - cz;
       const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
       if (Math.abs(lx) > hw + m || Math.abs(lz) > hd + m) return NaN;
-      return low + h * clamp01((lz + hd) / d);
+      return low + h * rampT(o.label, (lz + hd) / d);
     };
   } else if (o.type === 'stairs') {
     const n = stairCount(h);
@@ -120,8 +143,7 @@ const makePiece = (o: MapObject): Piece | null => {
       const lx = (dx * cs - dz * sn) / hw, lz = (dx * sn + dz * cs) / hd;
       const r2 = lx * lx + lz * lz;
       if (r2 >= 1) return NaN;
-      const k = 1 - r2;
-      return low + h * k * k;
+      return low + h * hillK(o.label, r2);
     };
   } else {
     return null;
@@ -142,7 +164,7 @@ export const buildTerrain = (map: MapConfig | undefined | null): Terrain => {
       const [w, h, d] = o.args;
       if (!(w > 0) || !(h > 0) || !(d > 0)) continue;
       const rot = o.rotation?.[1] || 0;
-      pits.push({ src: o, cx: o.pos[0], cz: o.pos[2], cs: Math.cos(rot), sn: Math.sin(rot), hw: w / 2, hd: d / 2, depth: h });
+      pits.push({ src: o, bowl: o.label === 'bowl', cx: o.pos[0], cz: o.pos[2], cs: Math.cos(rot), sn: Math.sin(rot), hw: w / 2, hd: d / 2, depth: h });
     } else if (o.type === 'ladder') {
       const [w, h, d] = o.args;
       if (w > 0 && h > 0 && d > 0) {
@@ -168,7 +190,10 @@ export const buildTerrain = (map: MapConfig | undefined | null): Terrain => {
       const p = pits[i];
       const dx = x - p.cx, dz = z - p.cz;
       const lx = dx * p.cs - dz * p.sn, lz = dx * p.sn + dz * p.cs;
-      if (Math.abs(lx) < p.hw - shrink && Math.abs(lz) < p.hd - shrink) level = Math.min(level, -p.depth);
+      if (p.bowl) {
+        const a = lx / p.hw, b = lz / p.hd, q = a * a + b * b;
+        if (q < 1) level = Math.min(level, -p.depth * (1 - q));
+      } else if (Math.abs(lx) < p.hw - shrink && Math.abs(lz) < p.hd - shrink) level = Math.min(level, -p.depth);
     }
     return level;
   };
@@ -226,7 +251,18 @@ export const buildTerrain = (map: MapConfig | undefined | null): Terrain => {
     return false;
   };
 
-  return { active: true, half, voidFloor, pieces: pieces.length, heightAt, topAt, blocked, ceilingAt, hasFloor, ladderAt, pits };
+  const ladderInfo: Terrain['ladderInfo'] = (x, z, feetY) => {
+    for (let i = 0; i < ladders.length; i++) {
+      const l = ladders[i];
+      if (feetY < l.bottom - 0.4 || feetY > l.top + 0.5) continue;
+      const dx = x - l.cx, dz = z - l.cz;
+      const lx = dx * l.cs - dz * l.sn, lz = dx * l.sn + dz * l.cs;
+      if (Math.abs(lx) <= l.hw + 0.5 && Math.abs(lz) <= l.hd + 1.0) return { bottom: l.bottom, top: l.top };
+    }
+    return null;
+  };
+
+  return { active: true, half, voidFloor, pieces: pieces.length, heightAt, topAt, blocked, ceilingAt, hasFloor, ladderAt, ladderInfo, pits };
 };
 
 /** Playable half-size of a map (what the builder, edge walls and zombie spawning use). */

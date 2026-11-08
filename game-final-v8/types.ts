@@ -18,11 +18,11 @@ export enum GameStatus {
 export type GameMode = 'standard' | 'dead_ops' | 'multiplayer' | 'story' | 'multiplayer_ffa' | 'multiplayer_tdm' | 'gun_game' | 'hard_point' | 'make_your_own';
 export type Difficulty = 'easy' | 'normal' | 'hard';
 
-export type MultiplayerMode = 'ffa' | 'tdm' | 'gun_game' | 'hard_point';
+export type MultiplayerMode = 'ffa' | 'tdm' | 'gun_game' | 'hard_point' | 'ctf';
 
 export type PowerUpType = 'MAX_AMMO' | 'INSTA_KILL' | 'DOUBLE_POINTS' | 'NUKE' | 'DEATH_MACHINE' | 'FIRE_SALE' | 'ZOMBIE_BLOOD' | 'SKIP_ROUND' | 'GEM' | 'GRENADE' | 'FLASHBANG' | 'KING_ROBBO' | 'MONKEY_BOMB';
 
-export type WeaponCamo = 'none' | 'gilded' | 'crystal' | 'void_matter' | 'sakura' | 'wyvern' | 'frost' | 'lava' | 'galaxy' | 'crimson_hex' | 'abyss' | 'stellar' | 'prism';
+export type WeaponCamo = 'none' | 'gilded' | 'crystal' | 'void_matter' | 'sakura' | 'wyvern' | 'frost' | 'lava' | 'galaxy' | 'crimson_hex' | 'abyss' | 'stellar' | 'prism' | (string & {});
 export type WeaponAttachment = 'none' | 'red_dot' | 'acog' | 'foregrip' | 'extended_mag' | 'laser_sight' | 'suppressor';
 
 export interface ScoreEntry {

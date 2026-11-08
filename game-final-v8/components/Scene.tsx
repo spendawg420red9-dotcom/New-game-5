@@ -3,9 +3,11 @@ import React, { useRef, useState, useEffect, useMemo, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Sky, Stars, Plane, Box, Sphere, Cylinder, Cone, Grid, Float, useTexture, Sparkles, Text, Torus, Html, Instances, Instance, useGLTF } from '@react-three/drei';
 import { GLBProp, GLBBoundary, PlayerAvatar, getSharedEnv, toPlainGeometry, shrinkSceneTextures } from './GLBProp';
+import { resolveModelName, getCustomTracer, getCustomEffect, getCustomGlb, getCustomAnim } from '../customContent';
 import { machineBaseHeight, canonicalPerkId, isBuilderMap } from '../customMapUtils';
 import { resolveModelUrl } from '../userModels';
 import { MODEL_DEFAULTS } from '../modelDefaults';
+import { useSafeTexture } from '../safeTexture';
 import { buildTerrain, isTerrainType, STEP_UP, VOID_FALL_Y } from '../terrain';
 import { TerrainObject, useFloorGeometry } from './TerrainPieces';
 import { getProcTexture, isProcTexture, procName } from '../proceduralTextures';
@@ -323,6 +325,73 @@ const StreetLight: React.FC<{ pos: [number, number, number]; color?: string }> =
   );
 });
 
+// Extra wall detail for enterable buildings: window frames + sills, floor trim bands, base plinth,
+// side windows, door lamp + handle, roof parapet. Plain boxes only, so it stays cheap.
+const BuildingDetails: React.FC<{ size: THREE.Vector3; windows: { pos: number[]; args: number[] }[]; doorWidth: number; isOpen?: boolean }> = React.memo(({ size, windows, doorWidth, isOpen }) => {
+  const trim = '#2a2a2e';
+  const floors = Math.max(1, Math.floor(size.y / 3));
+  const sideWins = useMemo(() => {
+    const out: { x: number; y: number; z: number }[] = [];
+    const cols = Math.max(1, Math.floor(size.z / 5));
+    for (let r = 0; r < floors; r++) for (let c = 0; c < cols; c++) {
+      const z = -size.z / 2 + (c + 0.5) * (size.z / cols);
+      const y = -size.y / 2 + r * 3 + 1.5;
+      out.push({ x: size.x / 2 + 0.26, y, z }); out.push({ x: -size.x / 2 - 0.26, y, z });
+    }
+    return out;
+  }, [size, floors]);
+  return (
+    <group>
+      {/* Window frames + sills on front/back */}
+      {windows.map((w, i) => {
+        const [x, y, z] = w.pos; const dz = z > 0 ? 0.04 : -0.04;
+        return (
+          <group key={i} position={[x, y, z + dz]}>
+            <Box args={[1.3, 0.12, 0.15]} position={[0, 0.81, 0]}><meshStandardMaterial color={trim} /></Box>
+            <Box args={[1.4, 0.15, 0.3]} position={[0, -0.82, z > 0 ? 0.08 : -0.08]}><meshStandardMaterial color="#555" /></Box>
+            <Box args={[0.12, 1.5, 0.15]} position={[-0.6, 0, 0]}><meshStandardMaterial color={trim} /></Box>
+            <Box args={[0.12, 1.5, 0.15]} position={[0.6, 0, 0]}><meshStandardMaterial color={trim} /></Box>
+            <Box args={[1.2, 0.08, 0.12]} position={[0, 0, 0]}><meshStandardMaterial color={trim} /></Box>
+          </group>
+        );
+      })}
+      {/* Side windows */}
+      {sideWins.map((w, i) => (
+        <group key={'s' + i} position={[w.x, w.y, w.z]}>
+          <Box args={[0.1, 1.5, 1]}><meshStandardMaterial color="#00ffff" emissive="#00ffff" emissiveIntensity={0.35} transparent opacity={0.55} /></Box>
+          <Box args={[0.2, 0.12, 1.2]} position={[0, 0.8, 0]}><meshStandardMaterial color={trim} /></Box>
+          <Box args={[0.3, 0.14, 1.3]} position={[w.x > 0 ? 0.08 : -0.08, -0.8, 0]}><meshStandardMaterial color="#555" /></Box>
+        </group>
+      ))}
+      {/* Trim band at each floor line (all four sides) */}
+      {Array.from({ length: floors }, (_, r) => {
+        const y = -size.y / 2 + (r + 1) * 3;
+        if (y >= size.y / 2 - 0.3) return null;
+        return (
+          <Box key={'b' + r} args={[size.x + 0.4, 0.25, size.z + 0.4]} position={[0, y, 0]}>
+            <meshStandardMaterial color={trim} />
+          </Box>
+        );
+      })}
+      {/* Base plinth */}
+      <Box args={[size.x + 0.5, 0.9, size.z + 0.5]} position={[0, -size.y / 2 + 0.45, 0]}>
+        <meshStandardMaterial color="#1c1c1f" roughness={1} />
+      </Box>
+      {/* Door lamp + handle + steps */}
+      <Box args={[0.3, 0.3, 0.3]} position={[doorWidth / 2 + 0.9, size.y / 2 - 1.2 - size.y / 2 + size.y / 2, size.z / 2 + 0.4]}>
+        <meshStandardMaterial color="#ffd27a" emissive="#ffb84a" emissiveIntensity={1.2} />
+      </Box>
+      {!isOpen && <Box args={[0.12, 0.12, 0.3]} position={[doorWidth / 2 - 0.5, -size.y / 4, size.z / 2 + 0.2]}><meshStandardMaterial color="#aaa" metalness={0.9} /></Box>}
+      <Box args={[doorWidth + 1, 0.25, 1.2]} position={[0, -size.y / 2 + 0.12, size.z / 2 + 0.7]}><meshStandardMaterial color="#444" /></Box>
+      {/* Roof parapet */}
+      <Box args={[size.x + 0.6, 0.6, 0.2]} position={[0, size.y / 2 + 0.3, size.z / 2 + 0.2]}><meshStandardMaterial color="#1a1a1d" /></Box>
+      <Box args={[size.x + 0.6, 0.6, 0.2]} position={[0, size.y / 2 + 0.3, -size.z / 2 - 0.2]}><meshStandardMaterial color="#1a1a1d" /></Box>
+      <Box args={[0.2, 0.6, size.z + 0.6]} position={[size.x / 2 + 0.2, size.y / 2 + 0.3, 0]}><meshStandardMaterial color="#1a1a1d" /></Box>
+      <Box args={[0.2, 0.6, size.z + 0.6]} position={[-size.x / 2 - 0.2, size.y / 2 + 0.3, 0]}><meshStandardMaterial color="#1a1a1d" /></Box>
+    </group>
+  );
+});
+
 const EnterableBuilding: React.FC<{ pos: THREE.Vector3; size: THREE.Vector3; color: string; label: string; lightColor: string; isOpen?: boolean }> = React.memo(({ pos, size, color, label, lightColor, isOpen }) => {
   console.log('Rendering building:', label, pos);
   const thickness = 0.5;
@@ -435,6 +504,8 @@ const EnterableBuilding: React.FC<{ pos: THREE.Vector3; size: THREE.Vector3; col
           <meshStandardMaterial color="#00ffff" emissive="#00ffff" emissiveIntensity={0.5} transparent opacity={0.6} />
         </Box>
       ))}
+
+      <BuildingDetails size={size} windows={windows as any} doorWidth={doorWidth} isOpen={isOpen} />
 
       {/* Posters/Graffiti */}
       <Box args={[1.5, 2, 0.05]} position={[size.x/3, -size.y/4, size.z/2 + 0.26]} rotation={[0, 0, 0.1]}>
@@ -655,8 +726,58 @@ const WeaponMaterial: React.FC<{ camo: WeaponCamo; stats: any; materialRef: Reac
   );
 };
 
-export const WeaponModel: React.FC<{ weaponName: string; camo: WeaponCamo; attachments?: WeaponAttachment[] }> = ({ weaponName, camo, attachments = [] }) => {
-  const stats = WEAPONS_STATS[weaponName];
+// Your own fire / reload animation for custom guns. Listens for 'gun-fire' / 'gun-reload' events from the scene.
+const CustomGunAnim: React.FC<{ name: string; children: React.ReactNode }> = ({ name, children }) => {
+  const g = useRef<THREE.Group>(null);
+  const a = getCustomAnim(name);
+  const kick = useRef(0); const rel = useRef(0);
+  useEffect(() => {
+    const f = () => { kick.current = 1; };
+    const r = () => { rel.current = 1; };
+    window.addEventListener('gun-fire', f); window.addEventListener('gun-reload', r);
+    return () => { window.removeEventListener('gun-fire', f); window.removeEventListener('gun-reload', r); };
+  }, []);
+  useFrame((_, dt) => {
+    const o = g.current; if (!o || !a) return;
+    kick.current = Math.max(0, kick.current - dt * 8);
+    rel.current = Math.max(0, rel.current - dt * 0.8);
+    const k = kick.current, rc = a.recoil * 2;
+    o.position.set(0, 0, 0); o.rotation.set(0, 0, 0);
+    if (a.fire === 'kick') { o.position.z += k * rc; o.rotation.x -= k * rc * 1.5; }
+    else if (a.fire === 'twist') { o.rotation.z += k * rc * 3; o.position.z += k * rc * 0.5; }
+    else if (a.fire === 'jump') { o.position.y += k * rc; o.rotation.x -= k * rc * 2.5; }
+    const t = rel.current; // 1 -> 0 across the reload
+    if (t > 0) {
+      const p = Math.sin((1 - t) * Math.PI);
+      if (a.reload === 'spin') o.rotation.x += (1 - t) * Math.PI * 2;
+      else if (a.reload === 'dip') o.position.y -= p * 0.4;
+      else if (a.reload === 'tilt') { o.rotation.z += p * 0.8; o.position.y -= p * 0.1; }
+    }
+  });
+  return <group ref={g}>{children}</group>;
+};
+
+export const WeaponModel: React.FC<{ weaponName: string; camo: WeaponCamo; attachments?: WeaponAttachment[] }> = (props) => {
+  const custom = getCustomGlb(props.weaponName);
+  if (!custom) return getCustomAnim(props.weaponName)
+    ? <CustomGunAnim name={props.weaponName}><WeaponModelBuiltIn {...props} /></CustomGunAnim>
+    : <WeaponModelBuiltIn {...props} />;
+  return (
+    <CustomGunAnim name={props.weaponName}>
+    <GLBBoundary fallback={<WeaponModelBuiltIn {...props} />}>
+      <Suspense fallback={null}>
+        <group rotation={[0, (custom.yaw * Math.PI) / 180, 0]}>
+          <GLBProp url={custom.url} size={[0.14, 0.24, 0.8]} anchor="center" />
+        </group>
+      </Suspense>
+    </GLBBoundary>
+    </CustomGunAnim>
+  );
+};
+
+const WeaponModelBuiltIn: React.FC<{ weaponName: string; camo: WeaponCamo; attachments?: WeaponAttachment[] }> = ({ weaponName: rawWeaponName, camo, attachments = [] }) => {
+  const stats = WEAPONS_STATS[rawWeaponName];
+  const weaponName = resolveModelName(rawWeaponName);
   const camoProps = CAMO_PROPS[camo];
   const materialRef = useRef<THREE.MeshStandardMaterial>(null);
   const leftMaterialRef = useRef<THREE.MeshStandardMaterial>(null);
@@ -1290,8 +1411,8 @@ const getWeaponLevel = (name: string) => {
 
 const TexturedObject: React.FC<{ type: string, args: any, pos: any, rotation?: any, color?: string, texture: string, emissive?: string, emissiveIntensity?: number, metalness?: number, roughness?: number }> = ({ type, args, pos, rotation, color = '#ffffff', texture, emissive, emissiveIntensity, metalness, roughness }) => {
   const procTex = isProcTexture(texture) ? procName(texture) : null;
-  const loadedTex = useTexture(procTex ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' : texture);
-  const tex = procTex ? getProcTexture(procTex) : loadedTex;
+  const loadedTex = useSafeTexture(procTex ? null : texture);
+  const tex = (procTex ? getProcTexture(procTex) : loadedTex) || undefined;
   if (type === 'cylinder') {
     return (
       <Cylinder args={args || [2, 4, 2]} position={pos} rotation={rotation}>
@@ -1998,7 +2119,10 @@ export const Scene: React.FC<SceneProps> = ({
 
   const tylerMemorialTexture = useTexture(tylerMemorialImg);
   const isShooting = useRef(false);
-  const hasCustomAvatar = !!mapConfig?.playerAvatar && mapConfig.playerAvatar !== 'default';
+  // "My Skin" (Creator Studio): your own .glb used as your player model on every map
+  const mySkin = useMemo(() => { try { return localStorage.getItem('ztown_my_skin_v1') || ''; } catch { return ''; } }, []);
+  const playerAvatarId = (mySkin || mapConfig?.playerAvatar || '') as string;
+  const hasCustomAvatar = !!playerAvatarId && playerAvatarId !== 'default';
   const effectiveThirdPersonMode = thirdPersonMode || isDoingMove || hasCustomAvatar;
   const internalPlayerPos = useRef(new THREE.Vector3(0, 1.2, 15));
   const playerPos = externalPlayerPosRef || internalPlayerPos;
@@ -2104,7 +2228,12 @@ export const Scene: React.FC<SceneProps> = ({
   const busStopTimer = useRef(0);
   const isPlayerOnBus = useRef(false);
   const lavaCooldown = useRef(0);
+  const trapCooldown = useRef(0);
+  const trapList = useMemo(() => (mapConfig.objects || []).filter(o => o && o.args && (o.behavior === 'hazard' || o.behavior === 'bounce' || o.behavior === 'spin') && ['box', 'wall', 'cylinder', 'sphere', 'pyramid', 'platform'].includes(o.type)), [mapConfig]);
   const lastHardpointTick = useRef(0);
+  // Capture the Flag state: flag i belongs to team i+1
+  const ctfRef = useRef<{ flags: { home: THREE.Vector3; pos: THREE.Vector3; carrier: string | null }[] } | null>(null);
+  const ctfGroups = [useRef<THREE.Group>(null), useRef<THREE.Group>(null)];
   const BUS_PATH = useMemo(() => [
     new THREE.Vector3(0, 0, 5), // Depot stop (moved from -8 to 5 to be fully clear of the Depot wall at -15)
     new THREE.Vector3(0, 0, 0), // Depot intersection
@@ -2688,6 +2817,7 @@ export const Scene: React.FC<SceneProps> = ({
   const zombieClimbStep = mapConfig.zombiesClimb === false ? 0.9 : 3;
   const groundYRef = useRef(0); // height of the ground under the player's feet while standing
   const onLadderRef = useRef(false);
+  const ladderCooldown = useRef(0);
 
   const collisionWalls = useMemo(() => {
     const walls: Wall[] = [];
@@ -2776,6 +2906,33 @@ export const Scene: React.FC<SceneProps> = ({
 
     return walls;
   }, [mapConfig, openDoors, tDogsEEUnlocked]);
+
+  // Spatial grid over the walls: collision checks only look at walls near you instead of every wall on the map
+  const nearWalls = useMemo(() => {
+    const CELL = 8, PAD = 3, BIG = 60;
+    const cells = new Map<number, Wall[]>();
+    const big: Wall[] = []; // huge walls (edge walls etc.) are always checked
+    const key = (cx: number, cz: number) => (cx + 512) * 1024 + (cz + 512);
+    for (const w of collisionWalls) {
+      const hx = w.size.x / 2 + PAD, hz = w.size.z / 2 + PAD;
+      if (hx * 2 > BIG * 2 || hz * 2 > BIG * 2) { big.push(w); continue; }
+      const x0 = Math.floor((w.pos.x - hx) / CELL), x1 = Math.floor((w.pos.x + hx) / CELL);
+      const z0 = Math.floor((w.pos.z - hz) / CELL), z1 = Math.floor((w.pos.z + hz) / CELL);
+      for (let cx = x0; cx <= x1; cx++) for (let cz = z0; cz <= z1; cz++) {
+        const k = key(cx, cz);
+        let a = cells.get(k);
+        if (!a) { a = []; cells.set(k, a); }
+        a.push(w);
+      }
+    }
+    const merged = new Map<number, Wall[]>();
+    return (x: number, z: number): Wall[] => {
+      const k = key(Math.floor(x / CELL), Math.floor(z / CELL));
+      let m = merged.get(k);
+      if (!m) { const a = cells.get(k); m = a ? (big.length ? a.concat(big) : a) : big; merged.set(k, m); }
+      return m;
+    };
+  }, [collisionWalls]);
 
   // Initial Spawn (Mount only)
   useEffect(() => {
@@ -2876,8 +3033,9 @@ export const Scene: React.FC<SceneProps> = ({
 
     // Check X axis
     const nextX = px + moveVec.x;
-    for (let i = 0; i < collisionWalls.length; i++) {
-      const wall = collisionWalls[i];
+    const wallsHere = nearWalls(px, pz);
+    for (let i = 0; i < wallsHere.length; i++) {
+      const wall = wallsHere[i];
       const wpos = wall.pos;
       const wsize = wall.size;
       const hw = wsize.x / 2;
@@ -2896,8 +3054,8 @@ export const Scene: React.FC<SceneProps> = ({
 
     // Check Z axis
     const nextZ = pz + moveVec.z;
-    for (let i = 0; i < collisionWalls.length; i++) {
-      const wall = collisionWalls[i];
+    for (let i = 0; i < wallsHere.length; i++) {
+      const wall = wallsHere[i];
       const wpos = wall.pos;
       const wsize = wall.size;
       const hw = wsize.x / 2;
@@ -2932,8 +3090,9 @@ export const Scene: React.FC<SceneProps> = ({
     const pz = pos.z;
     const r2 = radius * radius;
     if (terrain.active && terrain.blocked(px, pz, pos.y, zombieClimbStep)) return true;
-    for (let i = 0; i < collisionWalls.length; i++) {
-      const wall = collisionWalls[i];
+    const wallsHere = nearWalls(px, pz);
+    for (let i = 0; i < wallsHere.length; i++) {
+      const wall = wallsHere[i];
       const wpos = wall.pos;
       const wsize = wall.size;
       const hw = wsize.x / 2;
@@ -3127,6 +3286,62 @@ export const Scene: React.FC<SceneProps> = ({
           }
         }
       }
+    }
+
+    // Capture the Flag
+    if (gameState.multiplayerMode === 'ctf') {
+      if (!ctfRef.current) {
+        ctfRef.current = { flags: [
+          { home: new THREE.Vector3(-35, 0, 0), pos: new THREE.Vector3(-35, 0, 0), carrier: null },
+          { home: new THREE.Vector3(35, 0, 0), pos: new THREE.Vector3(35, 0, 0), carrier: null },
+        ] };
+      }
+      const flags = ctfRef.current.flags;
+      const say = (m: string) => { try { window.dispatchEvent(new CustomEvent('ctf-msg', { detail: m })); } catch { /* ignore */ } };
+      const pTeam = gameState.team || 1;
+      const atHome = (f: typeof flags[number]) => !f.carrier && f.pos.distanceTo(f.home) < 0.5;
+      flags.forEach((f, idx) => {
+        const flagTeam = idx + 1;
+        if (f.carrier === 'player') {
+          if (gameState.isDowned) { f.carrier = null; f.pos.set(playerPos.current.x, 0, playerPos.current.z); say('You dropped the flag!'); }
+          else f.pos.set(playerPos.current.x, 0, playerPos.current.z);
+        } else if (f.carrier) {
+          const b = botsRef.current.find(x => x.id === f.carrier);
+          if (!b || b.isDowned) { f.carrier = null; if (b) f.pos.set(b.position.x, 0, b.position.z); }
+          else f.pos.set(b.position.x, 0, b.position.z);
+        }
+        if (!f.carrier) {
+          const pd = Math.hypot(playerPos.current.x - f.pos.x, playerPos.current.z - f.pos.z);
+          if (!gameState.isDowned && pd < 2.5) {
+            if (pTeam !== flagTeam) { f.carrier = 'player'; say('You have the enemy flag! Run it back to your base.'); }
+            else if (!atHome(f)) { f.pos.copy(f.home); say('Your flag was returned.'); }
+          }
+          if (!f.carrier) {
+            for (const b of botsRef.current) {
+              if (b.isDowned) continue;
+              if (Math.hypot(b.position.x - f.pos.x, b.position.z - f.pos.z) < 2.5) {
+                if ((b.team || 2) !== flagTeam) { f.carrier = b.id; break; }
+                else if (!atHome(f)) { f.pos.copy(f.home); break; }
+              }
+            }
+          }
+        }
+      });
+      // Captures: carrier reaches own base while own flag is home
+      const tryCapture = (team: number, x: number, z: number, carrierId: string) => {
+        const enemy = flags[team === 1 ? 1 : 0];
+        const own = flags[team - 1];
+        if (enemy.carrier !== carrierId || !atHome(own)) return;
+        if (Math.hypot(x - own.home.x, z - own.home.z) < 3.5) {
+          enemy.carrier = null; enemy.pos.copy(enemy.home);
+          onStatsUpdate({ [team === 1 ? 'team1Score' : 'team2Score']: 1 } as any);
+          if (carrierId === 'player') { onStatsUpdate({ points: 100 }); say('FLAG CAPTURED!'); }
+          else say(`Team ${team} captured a flag!`);
+        }
+      };
+      if (!gameState.isDowned) tryCapture(pTeam, playerPos.current.x, playerPos.current.z, 'player');
+      botsRef.current.forEach(b => { if (!b.isDowned) tryCapture(b.team || 2, b.position.x, b.position.z, b.id); });
+      flags.forEach((f, i) => { ctfGroups[i].current?.position.set(f.pos.x, f.carrier ? 2.2 : 0, f.pos.z); });
     }
 
     if (teleportZombiesToMe) {
@@ -3332,15 +3547,42 @@ export const Scene: React.FC<SceneProps> = ({
     
     const eyeFloorY = floorY + currentEyeHeight;
 
-    // Ladders: push forward to climb up, back to climb down
+    // Ladders: push forward to climb up, back to climb down. Reach the top and you step onto the platform;
+    // stand at the top edge and push back to climb down. Jump to let go.
     onLadderRef.current = false;
-    if (terrainOn && !gameState.isDowned && terrain.ladderAt(playerPos.current.x, playerPos.current.z, feetNow)) {
+    if (ladderCooldown.current > 0) ladderCooldown.current -= delta;
+    const ladder = (terrainOn && !gameState.isDowned && ladderCooldown.current <= 0) ? terrain.ladderInfo(playerPos.current.x, playerPos.current.z, feetNow) : null;
+    if (ladder) {
       const climb = moveInput.current.y;
-      if (!isGrounded.current || climb > 0.25) {
+      const nearTop = feetNow >= ladder.top - 0.35;
+      const grab = !isGrounded.current || climb > 0.25 || (nearTop && climb < -0.25);
+      if (grab) {
         onLadderRef.current = true;
         verticalVelocity.current = 0;
         isGrounded.current = false;
         if (Math.abs(climb) > 0.25) playerPos.current.y += Math.sign(climb) * 3.8 * delta;
+        // Top-out: step forward onto whatever is up there
+        const feetY = playerPos.current.y - 1.2;
+        if (climb > 0.25 && feetY >= ladder.top - 0.1) {
+          const fx = -Math.sin(playerRot.current.y), fz = -Math.cos(playerRot.current.y);
+          for (const d of [0.9, 0.6, 1.3]) {
+            const px = playerPos.current.x + fx * d, pz = playerPos.current.z + fz * d;
+            const topY = terrain.heightAt(px, pz, ladder.top + 0.4, 0.4);
+            if (topY > -50000 && topY >= ladder.top - 0.5) {
+              playerPos.current.x = px; playerPos.current.z = pz;
+              playerPos.current.y = topY + 1.2;
+              groundYRef.current = topY; isGrounded.current = true; verticalVelocity.current = 0;
+              onLadderRef.current = false; ladderCooldown.current = 0.3;
+              break;
+            }
+          }
+        }
+        // Jump off the ladder
+        if (jumpRequest.current && onLadderRef.current) {
+          const bx = Math.sin(playerRot.current.y), bz = Math.cos(playerRot.current.y);
+          playerPos.current.x += bx * 0.5; playerPos.current.z += bz * 0.5;
+          verticalVelocity.current = 5; onLadderRef.current = false; ladderCooldown.current = 0.4;
+        }
       }
     }
 
@@ -3438,6 +3680,7 @@ export const Scene: React.FC<SceneProps> = ({
 
     if (gameState.isReloading && !wasReloading.current) {
       wasReloading.current = true;
+      try { window.dispatchEvent(new Event('gun-reload')); } catch { /* ignore */ }
       if (gameState.perks.includes('electric') && gameState.ammo === 0) {
         soundService.playExplosion(); // Reuse explosion sound
         effects.current.push({ id: Math.random().toString(), type: 'explosion', pos: playerPos.current.clone(), life: 0.5, color: '#00ffff', scale: 2 });
@@ -3474,6 +3717,38 @@ export const Scene: React.FC<SceneProps> = ({
        } else {
           lavaCooldown.current -= delta;
        }
+    }
+
+    // Traps from the map builder: hazard hurts, bounce launches you, spin is a spinning blade
+    if (trapList.length > 0 && !gameState.isDowned) {
+      if (trapCooldown.current > 0) trapCooldown.current -= delta;
+      const tx = playerPos.current.x, tz = playerPos.current.z, feet = playerPos.current.y - 1.2;
+      for (let i = 0; i < trapList.length; i++) {
+        const o = trapList[i];
+        const [w, h, d] = o.args as [number, number, number];
+        const top = o.pos[1] + h / 2, bottom = o.pos[1] - h / 2;
+        if (feet > top + (o.behavior === 'spin' ? 1.6 : 0.5) || feet < bottom - 1.2) continue;
+        const dx = tx - o.pos[0], dz = tz - o.pos[2];
+        if (o.behavior === 'spin') {
+          const R = Math.max(w, d) / 2 + 0.4;
+          if (dx * dx + dz * dz < R * R && trapCooldown.current <= 0) {
+            onStatsUpdate({ hp: -20 });
+            const l = Math.hypot(dx, dz) || 1;
+            playerPos.current.x += (dx / l) * 1.5; playerPos.current.z += (dz / l) * 1.5;
+            trapCooldown.current = 0.8;
+          }
+          continue;
+        }
+        const rot = o.rotation?.[1] || 0, cs = Math.cos(rot), sn = Math.sin(rot);
+        const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
+        if (Math.abs(lx) > w / 2 + 0.2 || Math.abs(lz) > d / 2 + 0.2) continue;
+        if (o.behavior === 'bounce') {
+          if (feet <= top + 0.4 && verticalVelocity.current <= 1) { verticalVelocity.current = 16; isGrounded.current = false; }
+        } else if (trapCooldown.current <= 0 && feet <= top + 0.5) {
+          onStatsUpdate({ hp: -12 });
+          trapCooldown.current = 0.5;
+        }
+      }
     }
 
     // --- HEAVY LOGIC (Runs every frame now for smoothness) ---
@@ -3540,7 +3815,7 @@ export const Scene: React.FC<SceneProps> = ({
     nextPos.copy(playerPos.current);
     nextPos.x += moveVector.x * delta;
     let collidedX = false;
-    for (const wall of collisionWalls) {
+    for (const wall of nearWalls(nextPos.x, nextPos.z)) {
       if (checkAABB(nextPos, wall.pos, wall.size)) {
         collidedX = true;
         break;
@@ -3561,7 +3836,7 @@ export const Scene: React.FC<SceneProps> = ({
     nextPos.copy(playerPos.current);
     nextPos.z += moveVector.z * delta;
     let collidedZ = false;
-    for (const wall of collisionWalls) {
+    for (const wall of nearWalls(nextPos.x, nextPos.z)) {
       if (checkAABB(nextPos, wall.pos, wall.size)) {
         collidedZ = true;
         break;
@@ -4000,12 +4275,28 @@ export const Scene: React.FC<SceneProps> = ({
         let closestHit = { dist: 100, zombie: null as ZombieData | null, isHeadshot: false, hitPos: new THREE.Vector3(), isDragon: false, bot: null as BotData | null, eeMushroomIndex: -1, crowIndex: -1 };
         
         zombieRefs.current.forEach(z => {
-          tempVec1.current.copy(z.position).add(new THREE.Vector3(0, 2, 0));
-          tempBox.current.setFromCenterAndSize(tempVec1.current, new THREE.Vector3(0.4, 0.4, 0.4));
+          // Hit boxes follow the zombie's real size and pose (crawlers are low and stretched out, brutes are big, parasites fly)
+          const ownModel = !!z.customId;
+          const sc = ownModel ? 1 : z.type === 'brute' ? 1.5 : z.type === 'tank' ? 1.3 : z.type === 'runner' ? 0.9 : z.type === 'parasite' ? 0.6 : z.type === 'crawler' ? 0.7 : 1;
+          const lift = !ownModel && z.type === 'parasite' ? 2.0 : 0;
+          if (!ownModel && z.type === 'crawler') {
+            const fx = playerPos.current.x - z.position.x, fz = playerPos.current.z - z.position.z, fl = Math.hypot(fx, fz) || 1;
+            tempVec1.current.set(z.position.x + (fx / fl) * 1.2, z.position.y + 0.45, z.position.z + (fz / fl) * 1.2);
+            tempBox.current.setFromCenterAndSize(tempVec1.current, new THREE.Vector3(0.55, 0.5, 0.55));
+          } else {
+            tempVec1.current.copy(z.position).add(new THREE.Vector3(0, 1.9 * sc + lift, 0));
+            tempBox.current.setFromCenterAndSize(tempVec1.current, new THREE.Vector3(0.4 * sc + 0.1, 0.45 * sc + 0.1, 0.45 * sc + 0.1));
+          }
           const headIntersection = ray.ray.intersectBox(tempBox.current, new THREE.Vector3());
           
-          tempVec1.current.copy(z.position).add(new THREE.Vector3(0, 0.9, 0));
-          tempBox.current.setFromCenterAndSize(tempVec1.current, new THREE.Vector3(0.6, 1.8, 0.4));
+          if (!ownModel && z.type === 'crawler') {
+            const fx = playerPos.current.x - z.position.x, fz = playerPos.current.z - z.position.z, fl = Math.hypot(fx, fz) || 1;
+            tempVec1.current.set(z.position.x + (fx / fl) * 0.4, z.position.y + 0.35, z.position.z + (fz / fl) * 0.4);
+            tempBox.current.setFromCenterAndSize(tempVec1.current, new THREE.Vector3(1.1, 0.7, 1.1));
+          } else {
+            tempVec1.current.copy(z.position).add(new THREE.Vector3(0, 0.9 * sc + lift, 0));
+            tempBox.current.setFromCenterAndSize(tempVec1.current, new THREE.Vector3(0.6 * sc + 0.2, 1.8 * sc, 0.4 * sc + 0.2));
+          }
           const bodyIntersection = ray.ray.intersectBox(tempBox.current, new THREE.Vector3());
           
           if (headIntersection) {
@@ -4082,6 +4373,7 @@ export const Scene: React.FC<SceneProps> = ({
           }
         }
         
+        try { window.dispatchEvent(new Event('gun-fire')); } catch { /* ignore */ }
         const tracerEnd = (closestHit.zombie || closestHit.isDragon || closestHit.bot || closestHit.eeMushroomIndex > -1) ? direction.clone().multiplyScalar(closestHit.dist).add(camera.position) : (floorHitPos || direction.clone().multiplyScalar(50).add(camera.position));
         effects.current.push({
           id: Math.random().toString(),
@@ -4089,7 +4381,7 @@ export const Scene: React.FC<SceneProps> = ({
           pos: camera.position.clone().add(muzzleOffset.applyQuaternion(camera.quaternion)).add(direction.clone().multiplyScalar(0.5)),
           dir: tracerEnd.clone(),
           life: 0.1,
-          color: gameState.weaponName === 'RED9 BLASTER' ? '#00ff00' : '#ffffaa'
+          color: getCustomTracer(gameState.weaponName) || (gameState.weaponName === 'RED9 BLASTER' ? '#00ff00' : '#ffffaa')
         });
         
         if (closestHit.zombie) {
@@ -4098,7 +4390,7 @@ export const Scene: React.FC<SceneProps> = ({
           const levelMultiplier = 1 + Math.floor(((gameState as any).level || 1) / 5) * 0.01;
           const papLevel = getWeaponLevel(gameState.weaponName);
           const papMultiplier = papLevel > 0 ? PAP_LEVELS[papLevel as keyof typeof PAP_LEVELS].multiplier : 1;
-          const papEffect = papLevel > 0 ? PAP_LEVELS[papLevel as keyof typeof PAP_LEVELS].effect : 'none';
+          const papEffect = papLevel > 0 ? PAP_LEVELS[papLevel as keyof typeof PAP_LEVELS].effect : (getCustomEffect(gameState.weaponName) || 'none');
 
           let damage = gameState.instaKill ? 999999 : (weapon.damage * multiplier * (gameState.perks.includes('double') ? 2 : 1) * rankMasteryMultiplier * levelMultiplier * papMultiplier);
           
@@ -4681,7 +4973,22 @@ export const Scene: React.FC<SceneProps> = ({
         bot.targetId = null;
         
         // 4. Path to active Hardpoint or interactable or follow player
-        if (gameState.multiplayerMode === 'hard_point' && activeHardpoint) {
+        if (gameState.multiplayerMode === 'ctf' && ctfRef.current) {
+          const t = bot.team || 2;
+          const fl = ctfRef.current.flags;
+          const enemyF = fl[t === 1 ? 1 : 0];
+          const ownF = fl[t - 1];
+          const carrying = enemyF.carrier === bot.id;
+          const ownDropped = !ownF.carrier && ownF.pos.distanceTo(ownF.home) > 0.5;
+          const goal = carrying ? ownF.home : (ownDropped ? ownF.pos : enemyF.pos);
+          const toGoal = goal.clone().sub(bot.position); toGoal.y = 0;
+          if (toGoal.length() > 1.5) {
+            toGoal.normalize();
+            const moveVec = toGoal.multiplyScalar(5 * delta);
+            resolveCollision(bot.position, moveVec, 0.5);
+            bot.position.add(moveVec);
+          }
+        } else if (gameState.multiplayerMode === 'hard_point' && activeHardpoint) {
           const toHardpoint = activeHardpoint.pos.clone().sub(bot.position);
           toHardpoint.y = 0;
           const distToHP = toHardpoint.length();
@@ -5701,6 +6008,23 @@ export const Scene: React.FC<SceneProps> = ({
       {mapConfig.showDebris !== false && <Debris count={50} range={200} />}
       {mapConfig.showGrid !== false && !terrain.voidFloor && <Grid args={[400, 400]} cellColor="#006600" sectionColor="#00aa00" fadeDistance={150} position={[0, -0.04, 0]} />}
       
+      {gameState.multiplayerMode === 'ctf' && [0, 1].map(i => {
+        const col = i === 0 ? '#10b981' : '#ef4444';
+        const home = i === 0 ? [-35, 0, 0] : [35, 0, 0];
+        return (
+          <React.Fragment key={'ctf' + i}>
+            <Cylinder args={[3.5, 3.5, 0.2, 32]} position={[home[0], 0.1, home[2]] as any}>
+              <meshBasicMaterial color={col} transparent opacity={0.25} depthWrite={false} />
+            </Cylinder>
+            <group ref={ctfGroups[i]} position={[home[0], 0, home[2]]}>
+              <Cylinder args={[0.08, 0.08, 4, 8]} position={[0, 2, 0]}><meshStandardMaterial color="#ddd" metalness={0.8} /></Cylinder>
+              <Box args={[1.6, 1, 0.05]} position={[0.8, 3.4, 0]}><meshStandardMaterial color={col} emissive={col} emissiveIntensity={0.6} /></Box>
+              <Cylinder args={[0.6, 0.6, 60, 12]} position={[0, 30, 0]}><meshBasicMaterial color={col} transparent opacity={0.08} depthWrite={false} blending={THREE.AdditiveBlending} /></Cylinder>
+            </group>
+          </React.Fragment>
+        );
+      })}
+
       {activeHardpoint && (
          <group position={activeHardpoint.pos}>
             <Cylinder args={[8, 8, 0.5, 32]} position={[0, 0.25, 0]}>
@@ -5763,6 +6087,9 @@ export const Scene: React.FC<SceneProps> = ({
               <meshStandardMaterial color={obj.color} />
             </Box>
           );
+        }
+        if (obj.behavior === 'spin' && obj.args && (obj.type === 'box' || obj.type === 'wall' || obj.type === 'cylinder')) {
+          return <SpinningTrap key={i} obj={obj} />;
         }
         if (obj.type === 'box' || obj.type === 'wall' || obj.type === 'cylinder' || obj.type === 'sphere' || obj.type === 'pyramid' || obj.type === 'custom') {
           if (obj.texture) {
@@ -6794,7 +7121,7 @@ export const Scene: React.FC<SceneProps> = ({
 
       {hasCustomAvatar && (
         <PlayerAvatar
-          avatarId={mapConfig.playerAvatar as string}
+          avatarId={playerAvatarId}
           playerPos={playerPos.current}
           isDowned={gameState.isDowned}
           isShootingRef={isShooting}
@@ -8038,6 +8365,8 @@ const ZombieFallbackBody: React.FC<{ color: string; hitFlash: number }> = ({ col
 
 const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFlash: number; playerPosRef: React.RefObject<THREE.Vector3>; paused: boolean; isStunned: boolean; type: 'normal' | 'runner' | 'tank' | 'inferno' | 'parasite' | 'crawler' | 'brute'; customZombieConfig?: any }> = React.memo(({ position, variant, hitFlash, playerPosRef, paused, isStunned, type, customZombieConfig }) => {
   const mesh = useRef<THREE.Group>(null);
+  const bodyRef = useRef<THREE.Group>(null);
+  const armL = useRef<THREE.Group>(null), armR = useRef<THREE.Group>(null), legL = useRef<THREE.Group>(null), legR = useRef<THREE.Group>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
   
   const clothingColor = useMemo(() => {
@@ -8095,12 +8424,38 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
       if (type === 'parasite') {
         yOffset = ownModel ? 1.4 + Math.sin(state.clock.elapsedTime * 2) * 0.25 : 2.0 + Math.sin(state.clock.elapsedTime * 2) * 0.5; // Flying height
       } else if (type === 'crawler') {
-        yOffset = ownModel ? 0 : -0.5 + Math.abs(Math.sin(state.clock.elapsedTime * 10)) * 0.1; // your model keeps its feet on the floor
+        yOffset = ownModel ? 0 : 0.02 + Math.abs(Math.sin(state.clock.elapsedTime * 10 + variant * 10)) * 0.04; // belly low to the floor; your model keeps its feet on the floor
       } else if (ownModel) {
         yOffset = 0; // a model with its own animation should not also bob up and down
       }
 
       meshRef.position.set(position.x, position.y + yOffset, position.z);
+
+      // Limb animation (only for the built-in body, only when near enough to matter)
+      if (!ownModel && bodyRef.current && meshRef.position.distanceToSquared(pPos) < 2500) {
+        const t = state.clock.elapsedTime * (type === 'runner' ? 12 : type === 'crawler' ? 9 : type === 'tank' || type === 'brute' ? 3 : 5.5) + variant * 10;
+        const sw = Math.sin(t);
+        const moving = !isStunned;
+        const body = bodyRef.current;
+        if (type === 'crawler') {
+          // on all fours: torso pitched forward, arms plant and pull, legs drag behind
+          body.rotation.x = THREE.MathUtils.lerp(body.rotation.x, 1.3, 0.2);
+          body.rotation.z = moving ? Math.sin(t * 0.5) * 0.08 : 0;
+          if (armL.current) armL.current.rotation.x = moving ? -sw * 0.55 : 0;
+          if (armR.current) armR.current.rotation.x = moving ? sw * 0.55 : 0;
+          if (legL.current) legL.current.rotation.x = moving ? sw * 0.35 : 0;
+          if (legR.current) legR.current.rotation.x = moving ? -sw * 0.35 : 0;
+        } else {
+          body.rotation.x = 0;
+          body.rotation.z = moving ? sw * 0.04 : 0;
+          const reach = type === 'runner' ? -0.35 : 0;
+          if (armL.current) armL.current.rotation.x = reach + (moving ? sw * 0.18 : 0);
+          if (armR.current) armR.current.rotation.x = reach - (moving ? sw * 0.18 : 0);
+          const lg = type === 'runner' ? 0.9 : type === 'tank' || type === 'brute' ? 0.35 : 0.55;
+          if (legL.current) legL.current.rotation.x = moving ? sw * lg : 0;
+          if (legR.current) legR.current.rotation.x = moving ? -sw * lg : 0;
+        }
+      }
       
       if (!isStunned) {
         // Heavy rotation lerping (Throttled to run every 2 frames or only when close enough)
@@ -8150,7 +8505,7 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
             <ModelBody url={customZombieConfig.modelUrl} scale={customZombieConfig.modelScale ?? 1} hitFlash={hitFlash} kind={type} />
           </Suspense>
         </GLBBoundary>
-      ) : (<>
+      ) : (<group ref={bodyRef}>
       {/* Torso */}
       <Box args={[0.6, 0.9, 0.4]} position={[0, 1.25, 0]}>
         <meshStandardMaterial color={hitFlash > 0 ? '#ff0000' : clothingColor} roughness={0.9} metalness={0.1} emissive={hitFlash > 0 ? '#ff0000' : '#000'} />
@@ -8238,7 +8593,7 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
       )}
 
       {/* Arms (Classic reach pose) */}
-      <group position={[0.35, 1.5, 0]}>
+      <group ref={armR} position={[0.35, 1.5, 0]}>
         <Box args={[0.18, 0.18, 0.4]} position={[0, 0, 0.2]}>
           <meshStandardMaterial color={hitFlash > 0 ? '#ff0000' : clothingColor} roughness={0.9} />
         </Box>
@@ -8250,7 +8605,7 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
         <Box args={[0.05, 0.05, 0.15]} position={[-0.05, 0, 0.75]}><meshStandardMaterial color="#222" /></Box>
       </group>
       
-      <group position={[-0.35, 1.5, 0]}>
+      <group ref={armL} position={[-0.35, 1.5, 0]}>
         <Box args={[0.18, 0.18, 0.4]} position={[0, 0, 0.2]}>
           <meshStandardMaterial color={hitFlash > 0 ? '#ff0000' : clothingColor} roughness={0.9} />
         </Box>
@@ -8262,13 +8617,17 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
         <Box args={[0.05, 0.05, 0.15]} position={[-0.05, 0, 0.75]}><meshStandardMaterial color="#222" /></Box>
       </group>
 
-      {/* Legs */}
-      <Box args={[0.22, 0.8, 0.22]} position={[0.15, 0.4, 0]}>
-        <meshStandardMaterial color={hitFlash > 0 ? '#ff0000' : '#1a1a1a'} roughness={0.9} />
-      </Box>
-      <Box args={[0.22, 0.8, 0.22]} position={[-0.15, 0.4, 0]}>
-        <meshStandardMaterial color={hitFlash > 0 ? '#ff0000' : '#1a1a1a'} roughness={0.9} />
-      </Box>
+      {/* Legs (pivot at the hip so they swing) */}
+      <group ref={legR} position={[0.15, 0.8, 0]}>
+        <Box args={[0.22, 0.8, 0.22]} position={[0, -0.4, 0]}>
+          <meshStandardMaterial color={hitFlash > 0 ? '#ff0000' : '#1a1a1a'} roughness={0.9} />
+        </Box>
+      </group>
+      <group ref={legL} position={[-0.15, 0.8, 0]}>
+        <Box args={[0.22, 0.8, 0.22]} position={[0, -0.4, 0]}>
+          <meshStandardMaterial color={hitFlash > 0 ? '#ff0000' : '#1a1a1a'} roughness={0.9} />
+        </Box>
+      </group>
       
       {/* Blood Splatters */}
       <Box args={[0.2, 0.2, 0.41]} position={[0.1, 1.3, 0.01]}>
@@ -8277,10 +8636,25 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
       <Box args={[0.15, 0.3, 0.46]} position={[-0.1, 1.8, 0.01]}>
         <meshStandardMaterial color="#500" roughness={1} />
       </Box>
-      </>)}
+      </group>)}
     </group>
   );
 });
+
+const SpinningTrap: React.FC<{ obj: any }> = ({ obj }) => {
+  const g = useRef<THREE.Group>(null);
+  useFrame((_, dt) => { if (g.current) g.current.rotation.y += Math.min(dt, 0.05) * 2.4; });
+  const [w, h, d] = obj.args;
+  return (
+    <group position={obj.pos}>
+      <group ref={g}>
+        <Box args={[w, h, d]}>
+          <meshStandardMaterial color={obj.color || '#9ca3af'} metalness={0.7} roughness={0.3} emissive={obj.emissive || '#000000'} emissiveIntensity={obj.emissive ? (obj.emissiveIntensity ?? 1) : 0} />
+        </Box>
+      </group>
+    </group>
+  );
+};
 
 const MysteryBox: React.FC<{ pos: THREE.Vector3, cyclingWeapon?: string | null }> = ({ pos, cyclingWeapon }) => {
   const texture = useTexture('https://picsum.photos/seed/wood/512/512');
@@ -8367,9 +8741,14 @@ const MysteryBox: React.FC<{ pos: THREE.Vector3, cyclingWeapon?: string | null }
 
 const Ground: React.FC<{ mapConfig: MapConfig; pits?: { cx: number; cz: number; cs: number; sn: number; hw: number; hd: number }[] }> = ({ mapConfig, pits }) => {
   const procFloor = isProcTexture(mapConfig.floorTexture) ? procName(mapConfig.floorTexture) : null;
-  const loaded = useTexture(procFloor ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' : (mapConfig.floorTexture || 'https://picsum.photos/seed/asphalt/512/512'));
+  const ownImage = !procFloor && !!mapConfig.floorTexture && /^(data:|blob:)/.test(mapConfig.floorTexture);
+  const loaded = useTexture(procFloor || ownImage ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' : (mapConfig.floorTexture || 'https://picsum.photos/seed/asphalt/512/512'));
+  const ownTex = useSafeTexture(ownImage ? mapConfig.floorTexture : null);
   // built-in textures: own copy so the floor's tiling never changes the same texture used on hills and platforms
-  const texture = useMemo(() => { if (!procFloor) return loaded; const t = getProcTexture(procFloor).clone(); t.needsUpdate = true; return t; }, [procFloor, loaded]);
+  const texture = useMemo(() => {
+    if (ownImage) { if (!ownTex) return loaded; const t = ownTex.clone(); t.needsUpdate = true; return t; }
+    if (!procFloor) return loaded; const t = getProcTexture(procFloor).clone(); t.needsUpdate = true; return t;
+  }, [procFloor, loaded, ownImage, ownTex]);
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
   // Maps with a set size, pits (holes), a tile size or a shine setting get their own floor. Everything else uses the original one.
   const customFloor = !!procFloor || !!mapConfig.mapSize || (pits && pits.length > 0) || !!mapConfig.floorTile || mapConfig.floorRoughness !== undefined;

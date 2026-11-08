@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { useGLTF, useAnimations } from '@react-three/drei';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { shrinkSceneTextures } from './GLBProp';
+import { resolveModelUrl } from '../userModels';
 
 // Game Intel (Bestiary) 3D view: uses YOUR .glb for an enemy when the file exists, else the built-in model.
 //
@@ -19,6 +20,17 @@ const candidates = (type: string) => {
   const base = NAMES[type] || [type, `zombie_${type}`, `${type}_zombie`];
   return base.map(n => `/assets/zombies/${n}.glb`);
 };
+
+// Models you picked inside the game (Bestiary > "Use my .glb"): enemy type -> user model id.
+const OVERRIDE_KEY = 'ztown_enemy_glb_override_v1';
+const readOverrides = (): Record<string, string> => { try { return JSON.parse(localStorage.getItem(OVERRIDE_KEY) || '{}') || {}; } catch { return {}; } };
+export const setEnemyGlbOverride = (type: string, userModelId: string | null) => {
+  const o = readOverrides();
+  if (userModelId) o[type] = userModelId; else delete o[type];
+  try { localStorage.setItem(OVERRIDE_KEY, JSON.stringify(o)); } catch { /* ignore */ }
+  found.delete(type); pending.delete(type);
+};
+export const hasEnemyGlbOverride = (type: string) => !!readOverrides()[type];
 
 const found = new Map<string, string | null>();
 const pending = new Map<string, Promise<string | null>>();
@@ -39,6 +51,11 @@ export const findEnemyGlb = (type: string): Promise<string | null> => {
   let p = pending.get(type);
   if (!p) {
     p = (async () => {
+      const ov = readOverrides()[type];
+      if (ov) {
+        const u = resolveModelUrl(`user:${ov}`);
+        if (u) { found.set(type, u); return u; }
+      }
       for (const u of candidates(type)) {
         if (await probe(u)) { found.set(type, u); return u; }
       }
