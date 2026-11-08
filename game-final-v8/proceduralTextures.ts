@@ -129,3 +129,6 @@ export const procPreview = (id: string): string => {
   previews.set(id, u);
   return u;
 };
+
+/** Called once at startup from index.tsx. Textures are built lazily by getProcTexture, so there is nothing to pre-install. */
+export const installProceduralTextures = (): void => {};
