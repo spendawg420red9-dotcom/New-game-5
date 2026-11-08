@@ -93,6 +93,30 @@ export const ModelPicker: React.FC<{ folder?: string; label?: string; onPick: (m
 // ---------------------------------------------------------------------------
 // GUNS: 3D view + "Use my .glb" for any gun
 // ---------------------------------------------------------------------------
+
+/** "In your hands": the gun exactly where the game puts it in first person, looking the way the zombies are. */
+export const HeldView: React.FC<{ name: string; className?: string }> = ({ name, className = 'h-56' }) => {
+  const [, tick] = useState(0);
+  useEffect(() => subscribeGunFit(() => tick(n => n + 1)), []);
+  return (
+    <div className={`relative bg-gradient-to-b from-slate-700 to-slate-950 overflow-hidden ${className}`}>
+      <Canvas dpr={[1, 1.5]} camera={{ position: [0, 0, 0], fov: 60, near: 0.05, far: 50 }} gl={{ antialias: true, powerPreference: 'low-power' }}>
+        <ambientLight intensity={0.8} />
+        <directionalLight position={[2, 4, 3]} intensity={2} />
+        <SceneEnv />
+        <group position={[0.25, -0.3, -0.5]}>
+          <Suspense fallback={null}><GLBBoundary fallback={null}><WeaponModel weaponName={name} camo={'none' as any} /></GLBBoundary></Suspense>
+        </group>
+        {/* a few "zombie" posts straight ahead so you can see which way the barrel points */}
+        {[-1.2, 0, 1.2].map(x => <mesh key={x} position={[x, -0.3, -4]}><boxGeometry args={[0.5, 1.6, 0.4]} /><meshStandardMaterial color="#7f1d1d" /></mesh>)}
+        <mesh position={[0, -1, -4]} rotation={[-Math.PI / 2, 0, 0]}><planeGeometry args={[30, 30]} /><meshStandardMaterial color="#1e293b" /></mesh>
+      </Canvas>
+      <div className="absolute left-1/2 top-1/2 w-3 h-3 -translate-x-1/2 -translate-y-1/2 border border-white/60 rounded-full pointer-events-none" />
+      <div className="absolute bottom-1 left-2 text-[9px] font-black uppercase text-white/50 pointer-events-none">In your hands (barrel should point at the red zombies)</div>
+    </div>
+  );
+};
+
 export const GunViewerPanel: React.FC<{ name: string; color?: string }> = ({ name, color }) => {
   const [, tick] = useState(0);
   useEffect(() => subscribeGunFit(() => tick(n => n + 1)), []);
@@ -109,6 +133,7 @@ export const GunViewerPanel: React.FC<{ name: string; color?: string }> = ({ nam
       <GlbStage className="h-52">
         <group scale={2.1}><WeaponModel weaponName={name} camo={'none' as any} /></group>
       </GlbStage>
+      {cur && <HeldView name={name} />}
       <div className="p-2.5 space-y-2 bg-zinc-950">
         <ModelPicker folder="Props" label={spec ? 'Change .glb' : 'Use my .glb'} onPick={id => apply({ glb: `user:${id}` })} />
         {cur && (

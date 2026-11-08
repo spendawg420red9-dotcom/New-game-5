@@ -70,21 +70,25 @@ export const GunGLB: React.FC<{
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
 
-    // average position of the model's points: the stock / grip end is heavier than the barrel end
+    // Sample the model's points. The average position tells which end is heavy (stock / grip). The 7%..93% spread
+    // along each side (instead of the full box) stops a long baked-in arm / hand / stand from being mistaken for the barrel.
     let total = 0;
     meshes.forEach(m => { total += (m.geometry?.attributes?.position?.count) || 0; });
     const stride = Math.max(1, Math.floor(total / 30000));
     const v = new THREE.Vector3(); const sum = new THREE.Vector3(); let n = 0;
+    const xs: number[] = [], ys: number[] = [], zs: number[] = [];
     meshes.forEach(m => {
       const p = m.geometry?.attributes?.position; if (!p) return;
-      for (let i = 0; i < p.count; i += stride) { v.fromBufferAttribute(p as THREE.BufferAttribute, i).applyMatrix4(m.matrixWorld); sum.add(v); n++; }
+      for (let i = 0; i < p.count; i += stride) { v.fromBufferAttribute(p as THREE.BufferAttribute, i).applyMatrix4(m.matrixWorld); sum.add(v); n++; xs.push(v.x); ys.push(v.y); zs.push(v.z); }
     });
     const d = n ? sum.divideScalar(n).sub(center) : new THREE.Vector3();
-    return { clone, mats, size, center, d };
+    const spread = (a: number[], fb: number) => { if (a.length < 50) return fb; a.sort((p, q) => p - q); return Math.max(1e-4, a[Math.floor(a.length * 0.93)] - a[Math.floor(a.length * 0.07)]); };
+    const core = new THREE.Vector3(spread(xs, size.x), spread(ys, size.y), spread(zs, size.z));
+    return { clone, mats, size, center, d, core };
   }, [scene, gl]);
 
   const orient = useMemo(() => {
-    const { axis, flip } = pickGunOrientation(built.size, built.d, spec.auto);
+    const { axis, flip } = pickGunOrientation(built.core, built.d, spec.auto);
     const q = new THREE.Quaternion();
     if (axis === 'x') q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
     else if (axis === 'y') q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);

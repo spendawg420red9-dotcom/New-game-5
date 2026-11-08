@@ -15,3 +15,7 @@
 **Performance** – adaptive resolution (drops/raises DPR to hold frame rate, all devices), no antialias on high-DPR screens, stencil off, smaller textures on phones, non-suspending weapon textures, removed a per-render console.log.
 
 Everything else is unchanged.
+
+## Held-gun fix (follow-up)
+- Auto-orientation now measures the model's main body (7%-93% of its points) so a baked-in arm/hand no longer gets mistaken for the barrel.
+- New "In your hands" live preview in the gun's 3D view: shows the gun exactly where the game holds it, with red zombie posts ahead. Tap Turn / Tip / Roll / Flip and watch it until the barrel points at them.
