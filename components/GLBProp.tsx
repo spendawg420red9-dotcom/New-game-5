@@ -6,6 +6,8 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { MODEL_DEFAULTS, Cutout } from '../modelDefaults';
 import { resolveModelUrl } from '../userModels';
 import { Zombie3D, Dragon3D, Elephant3D, Ogre3D, Worm3D, MushroomKeeper3D } from './Enemy3DModels';
+import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { isMySkin, loadSkinCfg } from '../skinConfig';
 
 // Keeps the game alive if a GLB is missing or fails to load.
 export class GLBBoundary extends React.Component<{ fallback?: React.ReactNode; children?: React.ReactNode }, { failed: boolean }> {
@@ -275,7 +277,7 @@ const AVATAR_HEIGHT: Record<string, number> = {
 const POSE_DOWN = 1.15;    // how far the arms drop from the T-pose (rad)
 const POSE_FORWARD = 1.0;  // how far they swing forward to hold the gun (rad)
 
-const PosedGLBBody: React.FC<{ url: string; height: number; renderWeapon?: () => React.ReactNode; isMoving: React.MutableRefObject<boolean>; isShooting: React.MutableRefObject<boolean> }> = ({ url, height, renderWeapon, isMoving, isShooting }) => {
+export const PosedGLBBody: React.FC<{ url: string; height: number; renderWeapon?: () => React.ReactNode; isMoving: React.MutableRefObject<boolean>; isShooting: React.MutableRefObject<boolean> }> = ({ url, height, renderWeapon, isMoving, isShooting }) => {
   const { scene } = useGLTF(resolveModelUrl(url)) as any;
   shrinkSceneTextures(scene);
   const { gl } = useThree();
@@ -431,6 +433,55 @@ const PosedGLBBody: React.FC<{ url: string; height: number; renderWeapon?: () =>
   );
 };
 
+
+// Your own skin as a solid model: nothing is bent, so it can never come out twisted. All of its parts are kept (the old rig
+// only drew the first mesh), it is scaled evenly to the chosen height, stands on the ground and turns by `yaw` to face forward.
+export const RigidGLBBody: React.FC<{
+  url: string; height: number; yaw?: number; renderWeapon?: () => React.ReactNode;
+  gunX?: number; gunY?: number; gunZ?: number; gunScale?: number;
+}> = ({ url, height, yaw = 0, renderWeapon, gunX = 0, gunY = 0, gunZ = 0, gunScale = 1 }) => {
+  const { scene } = useGLTF(resolveModelUrl(url)) as any;
+  shrinkSceneTextures(scene);
+  const { gl } = useThree();
+  const built = useMemo(() => {
+    const clone = cloneSkinned(scene) as THREE.Object3D;
+    clone.updateMatrixWorld(true);
+    const env = getEnv(gl);
+    clone.traverse((o: any) => {
+      if (!o.isMesh && !o.isSkinnedMesh) return;
+      o.frustumCulled = false;
+      const list = Array.isArray(o.material) ? o.material : [o.material];
+      const own = list.map((m: any) => {
+        const c = m.clone(); c.side = THREE.DoubleSide;
+        if (c.map) c.map.colorSpace = THREE.SRGBColorSpace;
+        if (c.isMeshStandardMaterial) { c.envMap = env; c.envMapIntensity = 0.9; c.metalness = Math.min(c.metalness ?? 0, 0.6); c.roughness = Math.max(c.roughness ?? 1, 0.4); }
+        return c;
+      });
+      o.material = Array.isArray(o.material) ? own : own[0];
+    });
+    const box = new THREE.Box3().setFromObject(clone);
+    const size = box.getSize(new THREE.Vector3()); const c = box.getCenter(new THREE.Vector3());
+    const k = height / Math.max(size.y, 1e-4);
+    return { clone, k, off: new THREE.Vector3(-c.x, -box.min.y, -c.z) };
+  }, [scene, gl, height]);
+  return (
+    <group>
+      <group rotation={[0, yaw * Math.PI / 180, 0]}>
+        <group scale={built.k}>
+          <group position={built.off}><primitive object={built.clone} /></group>
+        </group>
+      </group>
+      {renderWeapon && (
+        <group position={[gunX, height * 0.6 + gunY, 0.3 + gunZ]} scale={0.5 * Math.max(0.1, gunScale)}>
+          <group rotation={[0, Math.PI, 0]}>
+            <GLBBoundary fallback={null}><Suspense fallback={null}>{renderWeapon()}</Suspense></GLBBoundary>
+          </group>
+        </group>
+      )}
+    </group>
+  );
+};
+
 const AvatarFallback: React.FC = () => (
   <group>
     <mesh position={[0, 1.0, 0]}><boxGeometry args={[0.6, 0.9, 0.4]} /><meshStandardMaterial color="#4d7c0f" /></mesh>
@@ -457,6 +508,8 @@ export const PlayerAvatar: React.FC<{
   const dir = useMemo(() => new THREE.Vector3(), []);
   const { camera } = useThree();
   const h = AVATAR_HEIGHT[avatarId] ?? 1.8;
+  const mine = useMemo(() => isMySkin(avatarId), [avatarId]);
+  const skin = useMemo(() => loadSkinCfg(), []);
 
   useFrame((_, delta) => {
     if (!root.current) return;
@@ -484,7 +537,8 @@ export const PlayerAvatar: React.FC<{
           <Suspense fallback={null}>
             {avatarId === 'biohazard_armor' && <PosedGLBBody url="/assets/r9s/biohazard_armor.glb" height={h} renderWeapon={renderWeapon} isMoving={isMoving} isShooting={isShootingRef || noShoot} />}
             {avatarId === 'zombie_pickle' && <PosedGLBBody url="/assets/zombies/zombie_pickle.glb" height={h} renderWeapon={renderWeapon} isMoving={isMoving} isShooting={isShootingRef || noShoot} />}
-            {avatarId.startsWith('user:') && <PosedGLBBody url={resolveModelUrl(avatarId)} height={h} renderWeapon={renderWeapon} isMoving={isMoving} isShooting={isShootingRef || noShoot} />}
+            {avatarId.startsWith('user:') && !(mine && !skin.pose) && <PosedGLBBody url={resolveModelUrl(avatarId)} height={mine ? skin.height : h} renderWeapon={renderWeapon} isMoving={isMoving} isShooting={isShootingRef || noShoot} />}
+            {avatarId.startsWith('user:') && mine && !skin.pose && <RigidGLBBody url={resolveModelUrl(avatarId)} height={skin.height} yaw={skin.yaw} renderWeapon={renderWeapon} gunX={skin.gunX} gunY={skin.gunY} gunZ={skin.gunZ} gunScale={skin.gunScale} />}
             {zombieVariant && <Normalized height={h}><Zombie3D variant={zombieVariant as any} /></Normalized>}
             {avatarId === 'boss_dragon' && <Normalized height={h}><Dragon3D /></Normalized>}
             {avatarId === 'boss_elephant' && <Normalized height={h}><Elephant3D /></Normalized>}

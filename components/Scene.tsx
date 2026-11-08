@@ -7,7 +7,7 @@ import { GunGLB } from './GunGLB';
 import { perkGlbRef } from '../perkGlb';
 import { gunTargetLength } from '../gunFit';
 import { extractSurfacePoints, collidersFromPoints, isDefaultBox } from '../autoColliders';
-import { resolveModelName, getCustomTracer, getCustomEffect, getCustomGlb, getCustomAnim } from '../customContent';
+import { resolveModelName, getCustomTracer, getCustomEffect, getCustomGlb, getCustomAnim, getCustomExtras } from '../customContent';
 import { machineBaseHeight, canonicalPerkId, isBuilderMap } from '../customMapUtils';
 import { resolveModelUrl } from '../userModels';
 import { MODEL_DEFAULTS } from '../modelDefaults';
@@ -762,7 +762,55 @@ const CustomGunAnim: React.FC<{ name: string; children: React.ReactNode }> = ({ 
   return <group ref={g}>{children}</group>;
 };
 
-export const WeaponModel: React.FC<{ weaponName: string; camo: WeaponCamo; attachments?: WeaponAttachment[] }> = (props) => {
+// Muzzle flash drawn on the held gun (Creator Studio: colour, size, how long it lasts, where it sits on the barrel).
+const HeldMuzzleFlash: React.FC<{ name: string; tipZ: number }> = ({ name, tipZ }) => {
+  const g = useRef<THREE.Group>(null);
+  const t = useRef(0);
+  useEffect(() => {
+    const f = () => { t.current = 1; };
+    window.addEventListener('gun-fire', f);
+    return () => window.removeEventListener('gun-fire', f);
+  }, []);
+  useFrame((_, dt) => {
+    const o = g.current; const x = getCustomExtras(name); if (!o || !x) return;
+    t.current = Math.max(0, t.current - dt / Math.max(0.02, x.flashLife / 1000));
+    o.visible = t.current > 0 && !x.flashOff;
+    if (o.visible) o.scale.setScalar((0.5 + t.current * 0.5) * (0.7 + Math.random() * 0.3));
+  });
+  const x = getCustomExtras(name);
+  if (!x) return null;
+  const sz = Math.max(0.02, x.flashSize);
+  const mat = <meshBasicMaterial color={x.flashColor} transparent opacity={0.9} blending={THREE.AdditiveBlending} depthWrite={false} />;
+  return (
+    <group ref={g} visible={false} position={[0, x.flashY, tipZ + x.flashZ]}>
+      <mesh><sphereGeometry args={[sz * 0.4, 10, 10]} />{mat}</mesh>
+      <mesh><boxGeometry args={[sz * 2.4, sz * 0.12, sz * 0.12]} />{mat}</mesh>
+      <mesh><boxGeometry args={[sz * 0.12, sz * 2.4, sz * 0.12]} />{mat}</mesh>
+      <mesh position={[0, 0, -sz * 0.6]}><boxGeometry args={[sz * 0.12, sz * 0.12, sz * 1.6]} />{mat}</mesh>
+    </group>
+  );
+};
+
+// How the whole gun sits in your hand (size / position / angle) + its muzzle flash. Only guns made in the Creator Studio have this.
+const RAD_ = Math.PI / 180;
+const HandFit: React.FC<{ name: string; children: React.ReactNode }> = ({ name, children }) => {
+  const x = getCustomExtras(name);
+  if (!x) return <>{children}</>;
+  const st = WEAPONS_STATS[resolveModelName(name)] || WEAPONS_STATS[name] || WEAPONS_STATS['M1911'];
+  const length = gunTargetLength(st?.barrelLen ?? 0.4, !!st?.twoHanded);
+  return (
+    <group position={[x.handX, x.handY, x.handZ]} rotation={[x.handPitch * RAD_, x.handYaw * RAD_, x.handRoll * RAD_]} scale={Math.max(0.1, x.handScale)}>
+      {children}
+      <HeldMuzzleFlash name={name} tipZ={-0.68 * length} />
+    </group>
+  );
+};
+
+export const WeaponModel: React.FC<{ weaponName: string; camo: WeaponCamo; attachments?: WeaponAttachment[] }> = (props) => (
+  <HandFit name={props.weaponName}><WeaponModelCore {...props} /></HandFit>
+);
+
+const WeaponModelCore: React.FC<{ weaponName: string; camo: WeaponCamo; attachments?: WeaponAttachment[] }> = (props) => {
   const custom = getCustomGlb(props.weaponName);
   if (!custom) return getCustomAnim(props.weaponName)
     ? <CustomGunAnim name={props.weaponName}><WeaponModelBuiltIn {...props} /></CustomGunAnim>
@@ -4243,20 +4291,22 @@ export const Scene: React.FC<SceneProps> = ({
             muzzlePos.copy(camera.position).add(_v2.copy(muzzleOffset).applyQuaternion(camera.quaternion)).add(_v3.copy(direction).multiplyScalar(0.6));
         }
         
-        if (!gameState.attachments.includes('suppressor')) {
+        const gunFx = getCustomExtras(gameState.weaponName); // Creator Studio muzzle flash settings (if any)
+        if (!gameState.attachments.includes('suppressor') && !gunFx?.flashOff) {
           effects.current.push({ 
             id: Math.random().toString(), 
             type: 'flash', 
             pos: muzzlePos, 
-            life: 0.08, 
-            color: '#ffaa00', 
-            scale: 0.2 
+            life: gunFx ? gunFx.flashLife / 1000 : 0.08, 
+            color: gunFx ? gunFx.flashColor : '#ffaa00', 
+            scale: gunFx ? gunFx.flashSize : 0.2 
           });
         }
 
         let baseSpread = gameState.perks.includes('deadshot') ? 0.005 : 0.02;
         if (gameState.attachments.includes('laser_sight') && !aimRequest.current) baseSpread *= 0.5;
         if (gameState.attachments.includes('foregrip')) baseSpread *= 0.7;
+        baseSpread *= gunFx?.accuracy ?? 1; // Creator Studio accuracy
 
         const spread = baseSpread * (aimRequest.current && !isLeft ? 0.2 : 1.0);
         const spreadVec = new THREE.Vector3((Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread, (Math.random() - 0.5) * spread);

@@ -4522,7 +4522,7 @@ const App: React.FC = () => {
     
     if (isReloading || stats.ammo === clipSize || status === GameStatus.PAUSED) return;
     setIsReloading(true);
-    soundService.playReload();
+    soundService.playReload(stats.weaponName);
     const reloadSpeed = stats.perks.includes('speed') ? 600 : 1200;
     setTimeout(() => {
       setStats(s => ({ ...s, ammo: clipSize }));
@@ -6180,100 +6180,100 @@ const App: React.FC = () => {
               )}
               
               {hudVis.perks && (
-              <div className="flex gap-2 pt-2">
+              <div className="flex flex-wrap gap-1 pt-1 max-w-[10rem]">
                 {stats.perks.includes('jugg') && (
-                  <div className="w-12 h-12 bg-red-600/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(220,38,38,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Heart className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-red-600/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(220,38,38,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Heart className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('speed') && (
-                  <div className="w-12 h-12 bg-green-600/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(22,163,74,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Gauge className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-green-600/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(22,163,74,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Gauge className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('stamin') && (
-                  <div className="w-12 h-12 bg-yellow-500/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(234,179,8,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Zap className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-yellow-500/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(234,179,8,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Zap className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('double') && (
-                  <div className="w-12 h-12 bg-orange-600/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(234,88,12,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Shield className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-orange-600/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(234,88,12,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Shield className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('mule') && (
-                  <div className="w-12 h-12 bg-indigo-600/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(79,70,229,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Database className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-indigo-600/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(79,70,229,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Database className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('phd') && (
-                  <div className="w-12 h-12 bg-purple-600/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(147,51,234,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Bomb className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-purple-600/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(147,51,234,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Bomb className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('deadshot') && (
-                  <div className="w-12 h-12 bg-gray-600/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(75,85,99,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <HeadshotIcon className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-gray-600/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(75,85,99,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <HeadshotIcon className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('electric') && (
-                  <div className="w-12 h-12 bg-cyan-500/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(6,182,212,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Zap className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-cyan-500/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(6,182,212,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Zap className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('revive') && (
-                  <div className="w-12 h-12 bg-blue-500/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(59,130,246,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Activity className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-blue-500/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(59,130,246,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Activity className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('vulture') && (
-                  <div className="w-12 h-12 bg-lime-500/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(132,204,22,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Database className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-lime-500/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(132,204,22,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Database className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('widow') && (
-                  <div className="w-12 h-12 bg-pink-600/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(219,39,119,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Swords className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-pink-600/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(219,39,119,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Swords className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('slider') && (
-                  <div className="w-12 h-12 bg-orange-400/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(251,146,60,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <SlideIcon className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-orange-400/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(251,146,60,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <SlideIcon className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('winter') && (
-                  <div className="w-12 h-12 bg-blue-200/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(191,219,254,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Snowflake className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-blue-200/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(191,219,254,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Snowflake className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('dying') && (
-                  <div className="w-12 h-12 bg-red-600/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(220,38,38,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Flame className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-red-600/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(220,38,38,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Flame className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('razor') && (
-                  <div className="w-12 h-12 bg-purple-400/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(192,132,252,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Scissors className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-purple-400/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(192,132,252,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Scissors className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('timeslip') && (
-                  <div className="w-12 h-12 bg-cyan-300/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(103,232,249,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Hourglass className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-cyan-300/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(103,232,249,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Hourglass className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('bandolier') && (
-                  <div className="w-12 h-12 bg-orange-400/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(251,146,60,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Database className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-orange-400/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(251,146,60,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Database className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('tortoise') && (
-                  <div className="w-12 h-12 bg-emerald-400/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(52,211,153,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Shield className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-emerald-400/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(52,211,153,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Shield className="text-white w-4 h-4" />
                   </div>
                 )}
                 {stats.perks.includes('blaze') && (
-                  <div className="w-12 h-12 bg-orange-600/90 rounded-full flex items-center justify-center border-2 border-white/40 shadow-[0_0_15px_rgba(234,88,12,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
-                    <Flame className="text-white w-7 h-7" />
+                  <div className="w-7 h-7 bg-orange-600/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(234,88,12,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Flame className="text-white w-4 h-4" />
                   </div>
                 )}
               </div>

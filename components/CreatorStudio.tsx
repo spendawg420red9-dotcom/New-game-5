@@ -2,7 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { CAMO_PATTERNS, makePatternDataUrl, imageFileToDataUrl } from '../camoPatterns';
 import { AchievementEffect, AchievementFx, loadAchievementFx, saveAchievementFx } from './AchievementEffect';
 import { addUserModel } from '../userModels';
-import { CustomGun, CustomCamo, loadCustomGuns, saveCustomGuns, loadCustomCamos, saveCustomCamos } from '../customContent';
+import { CustomGun, CustomCamo, GunSound, loadCustomGuns, saveCustomGuns, loadCustomCamos, saveCustomCamos } from '../customContent';
+import { GunLivePreview } from './GunLivePreview';
+import { SkinPreview } from './SkinPreview';
+import { SkinCfg, loadSkinCfg, saveSkinCfg } from '../skinConfig';
+import { soundService } from '../services/soundService';
 
 const input = 'w-full bg-white/10 border border-white/20 rounded-sm px-3 py-2 text-white text-sm';
 const label = 'text-[10px] font-black uppercase tracking-widest text-white/50 mt-3 mb-1 block';
@@ -13,6 +17,52 @@ const Num: React.FC<{ l: string; v: number; min: number; max: number; step?: num
     <input type="range" min={min} max={max} step={step} value={v} onChange={e => on(Number(e.target.value))} className="w-full" />
   </div>
 );
+
+
+const Section: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
+  <div className="mt-4 p-2 bg-white/5 border border-white/10">
+    <div className="text-xs font-black uppercase tracking-widest text-amber-500">{title}</div>
+    {children}
+  </div>
+);
+
+const FIRE_PRESETS: [string, string][] = [['default', 'Normal game sound'], ['pistol', 'Pistol'], ['rifle', 'Rifle'], ['smg', 'SMG burst'], ['shotgun', 'Shotgun'],
+  ['sniper', 'Sniper'], ['silenced', 'Silenced'], ['laser', 'Laser'], ['cannon', 'Cannon'], ['magic', 'Magic'], ['none', 'Silent']];
+const RELOAD_PRESETS: [string, string][] = [['default', 'Normal game sound'], ['click', 'Click'], ['mag', 'Magazine swap'], ['pump', 'Pump'], ['bolt', 'Bolt'], ['charge', 'Power charge'], ['none', 'Silent']];
+const MAX_SOUND_BYTES = 600 * 1024;
+
+const labelCls = 'text-[10px] font-black uppercase tracking-widest text-white/50 mt-3 mb-1 block';
+const SoundEditor: React.FC<{ kind: 'fire' | 'reload'; label: string; value?: GunSound; base: string; on: (v: GunSound | undefined) => void }> = ({ kind, label, value, base, on }) => {
+  const v: GunSound = value || { preset: 'default' };
+  const presets = kind === 'fire' ? FIRE_PRESETS : RELOAD_PRESETS;
+  return (
+    <div className="mt-2">
+      <span className={labelCls}>{label}</span>
+      <select className={input} value={v.preset} onChange={e => on({ ...v, preset: e.target.value })}>
+        {presets.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
+        <option value="upload">{v.url ? 'My uploaded sound' : 'My own sound (upload)...'}</option>
+      </select>
+      <label className="block w-full mt-1 py-2 bg-emerald-700 text-center text-xs font-black uppercase cursor-pointer">
+        {v.url ? 'Sound added - tap to replace' : 'Upload sound (mp3 / wav / ogg, under 600 KB)'}
+        <input type="file" accept="audio/*" className="hidden" onChange={e => {
+          const f = e.target.files?.[0]; e.target.value = ''; if (!f) return;
+          if (f.size > MAX_SOUND_BYTES) { alert('That sound is ' + Math.round(f.size / 1024) + ' KB. Please use one under 600 KB (a short gun shot is usually 20-100 KB).'); return; }
+          const r = new FileReader();
+          r.onload = () => on({ ...v, preset: 'upload', url: String(r.result) });
+          r.onerror = () => alert('Could not read that sound file.');
+          r.readAsDataURL(f);
+        }} />
+      </label>
+      {v.preset !== 'default' && (<>
+        <Num l="Volume" v={v.vol ?? 1} min={0.1} max={2} step={0.05} on={n => on({ ...v, vol: n })} />
+        <Num l="Pitch (low / high)" v={v.pitch ?? 1} min={0.5} max={2} step={0.05} on={n => on({ ...v, pitch: n })} />
+      </>)}
+      <button onClick={() => { if (!soundService.playGunSound(kind, v)) { kind === 'fire' ? soundService.playShoot(base) : soundService.playReload(); } }}
+        className="w-full mt-2 py-2 bg-white/10 text-xs font-black uppercase">▶ Test sound</button>
+      {v.url && <button onClick={() => on({ ...v, url: undefined, preset: v.preset === 'upload' ? 'default' : v.preset })} className="w-full mt-1 py-1 bg-red-900/60 text-[11px] font-black uppercase">Remove uploaded sound</button>}
+    </div>
+  );
+};
 
 export const CreatorStudio: React.FC<{ baseGuns: string[]; onClose: () => void; onSaved: () => void }> = ({ baseGuns, onClose, onSaved }) => {
   const [tab, setTab] = useState<'guns' | 'camos' | 'effects' | 'skin'>('guns');
@@ -31,13 +81,18 @@ export const CreatorStudio: React.FC<{ baseGuns: string[]; onClose: () => void; 
 
   const [fx, setFx] = useState<AchievementFx>(loadAchievementFx);
   const [previewKey, setPreviewKey] = useState(0);
+  const [showPrev, setShowPrev] = useState(true);
+  const [skinCfg, setSkinCfg] = useState<SkinCfg>(loadSkinCfg);
+  const [skinGun, setSkinGun] = useState<string>(() => loadCustomGuns()[0]?.name || baseGuns[0] || 'M1911');
+  const patchSkin = (p: Partial<SkinCfg>) => setSkinCfg(prev => { const n = { ...prev, ...p }; saveSkinCfg(n); return n; });
   const [skin, setSkin] = useState<string>(() => { try { return localStorage.getItem('ztown_my_skin_v1') || ''; } catch { return ''; } });
   const saveGun = () => {
     const name = g.name.trim().toUpperCase();
     if (!name || baseGuns.includes(name)) { alert('Pick a name that is not an existing gun.'); return; }
     const gun = { ...g, name, id: g.id || String(Date.now()) };
     const next = [...guns.filter(x => x.id !== gun.id), gun];
-    saveCustomGuns(next); setGuns(next); onSaved();
+    if (!saveCustomGuns(next)) { alert('The browser is out of room. Remove an uploaded sound (or delete an old gun) and try again.'); return; }
+    setGuns(next); onSaved();
   };
   const saveCamo = () => {
     const camo = { ...c, id: c.id || String(Date.now()), name: c.name.trim() || 'Camo' };
@@ -60,6 +115,10 @@ export const CreatorStudio: React.FC<{ baseGuns: string[]; onClose: () => void; 
         </div>
 
         {tab === 'guns' && (<div>
+          <div className="sticky top-14 z-10 bg-black pb-1">
+            {showPrev && <GunLivePreview gun={g} className="h-44" />}
+            <button onClick={() => setShowPrev(v => !v)} className="w-full py-1 bg-white/10 text-[10px] font-black uppercase text-white/60">{showPrev ? 'Hide live preview' : 'Show live preview'}</button>
+          </div>
           <span className={label}>Name</span>
           <input className={input} value={g.name} maxLength={20} onChange={e => setG({ ...g, name: e.target.value })} />
           <span className={label}>Model / feel (uses this gun's 3D model)</span>
@@ -90,13 +149,29 @@ export const CreatorStudio: React.FC<{ baseGuns: string[]; onClose: () => void; 
               <button onClick={() => setG({ ...g, glbAuto: g.glbAuto === false })} className={`py-2 text-xs font-black uppercase ${g.glbAuto === false ? 'bg-white/10' : 'bg-amber-600'}`}>Auto-align {g.glbAuto === false ? 'off' : 'on'}</button>
               <button onClick={() => setG({ ...g, glbTint: !g.glbTint })} className={`py-2 text-xs font-black uppercase col-span-2 ${g.glbTint ? 'bg-amber-600' : 'bg-white/10'}`}>Paint with gun colour {g.glbTint ? 'on' : 'off'}</button>
             </div>
-            <Num l="Size" v={g.glbScale ?? 1} min={0.3} max={3} step={0.05} on={n => setG({ ...g, glbScale: n })} />
+            <Num l="Model size (inside its own fit)" v={g.glbScale ?? 1} min={0.3} max={3} step={0.05} on={n => setG({ ...g, glbScale: n })} />
             <Num l="Move left / right" v={g.glbX ?? 0} min={-0.5} max={0.5} step={0.01} on={n => setG({ ...g, glbX: n })} />
             <Num l="Move up / down" v={g.glbY ?? 0} min={-0.5} max={0.5} step={0.01} on={n => setG({ ...g, glbY: n })} />
             <Num l="Move forward / back" v={g.glbZ ?? 0} min={-0.5} max={0.5} step={0.01} on={n => setG({ ...g, glbZ: n })} />
             <button onClick={() => setG({ ...g, glbYaw: 0, glbPitch: 0, glbRoll: 0, glbFlip: false, glbAuto: true, glbScale: 1, glbX: 0, glbY: 0, glbZ: 0, glbTint: false })} className="w-full mt-2 py-2 bg-white/10 text-xs font-black uppercase">Reset fit</button>
-            <p className="text-[11px] text-white/40 mt-2">Save, then open the gun in Loadout to see it. Tip: if the barrel points backwards, tap Flip.</p>
+            <p className="text-[11px] text-white/40 mt-2">The preview above updates as you change things. Tip: if the barrel points backwards, tap Flip.</p>
           </div>)}
+          <Section title="In your hand (size & position)">
+            <p className="text-[11px] text-white/50 mt-1">Gun pointing the wrong way? Tap Flip or Turn and watch the preview.</p>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              {([['⇋ Flip front / back', 'handYaw', 180], ['↻ Turn 90° right', 'handYaw', 90], ['↺ Turn 90° left', 'handYaw', -90], ['⤴ Tip 90°', 'handPitch', 90], ['⟳ Roll 90°', 'handRoll', 90], ['⇅ Flip upside down', 'handRoll', 180]] as const).map(([l, k, d]) => (
+                <button key={l} onClick={() => { const n = ((((g as any)[k] || 0) + d + 540) % 360) - 180; setG({ ...g, [k]: n === -180 ? 180 : n }); }} className="py-2 bg-white/10 text-xs font-black uppercase">{l}</button>
+              ))}
+            </div>
+            <Num l="Gun size in hand" v={g.handScale ?? 1} min={0.3} max={3} step={0.05} on={n => setG({ ...g, handScale: n })} />
+            <Num l="Move left / right" v={g.handX ?? 0} min={-0.5} max={0.5} step={0.01} on={n => setG({ ...g, handX: n })} />
+            <Num l="Move up / down" v={g.handY ?? 0} min={-0.5} max={0.5} step={0.01} on={n => setG({ ...g, handY: n })} />
+            <Num l="Move forward / back" v={g.handZ ?? 0} min={-0.5} max={0.5} step={0.01} on={n => setG({ ...g, handZ: n })} />
+            <Num l="Turn left / right (deg)" v={g.handYaw ?? 0} min={-180} max={180} step={1} on={n => setG({ ...g, handYaw: n })} />
+            <Num l="Tip up / down (deg)" v={g.handPitch ?? 0} min={-180} max={180} step={1} on={n => setG({ ...g, handPitch: n })} />
+            <Num l="Roll (deg)" v={g.handRoll ?? 0} min={-180} max={180} step={1} on={n => setG({ ...g, handRoll: n })} />
+            <button onClick={() => setG({ ...g, handScale: 1, handX: 0, handY: 0, handZ: 0, handYaw: 0, handPitch: 0, handRoll: 0 })} className="w-full mt-2 py-2 bg-white/10 text-xs font-black uppercase">Reset hand position</button>
+          </Section>
           <Num l="Damage" v={g.damage} min={10} max={1500} on={n => setG({ ...g, damage: n })} />
           <Num l="Fire delay (ms, lower = faster)" v={g.rate} min={40} max={1500} on={n => setG({ ...g, rate: n })} />
           <Num l="Clip size" v={g.clip} min={1} max={200} on={n => setG({ ...g, clip: n })} />
@@ -117,6 +192,24 @@ export const CreatorStudio: React.FC<{ baseGuns: string[]; onClose: () => void; 
             <option value="dip">Dip down</option><option value="tilt">Tilt sideways</option>
           </select>
           <Num l="Kick strength" v={g.recoil ?? 0.15} min={0.02} max={0.6} step={0.01} on={n => setG({ ...g, recoil: n })} />
+          <Section title="Muzzle flash">
+            <button onClick={() => setG({ ...g, flashOff: !g.flashOff })} className={`w-full mt-2 py-2 text-xs font-black uppercase ${g.flashOff ? 'bg-white/10' : 'bg-amber-600'}`}>Muzzle flash {g.flashOff ? 'off' : 'on'}</button>
+            {!g.flashOff && (<>
+              <span className={label}>Flash colour</span>
+              <input type="color" className="w-full h-10" value={g.flashColor || '#ffaa00'} onChange={e => setG({ ...g, flashColor: e.target.value })} />
+              <Num l="Flash size" v={g.flashSize ?? 0.2} min={0.02} max={1} step={0.01} on={n => setG({ ...g, flashSize: n })} />
+              <Num l="Flash lasts (ms)" v={g.flashLife ?? 80} min={20} max={400} step={5} on={n => setG({ ...g, flashLife: n })} />
+              <Num l="Flash position: forward / back" v={g.flashZ ?? 0} min={-0.5} max={0.5} step={0.01} on={n => setG({ ...g, flashZ: n })} />
+              <Num l="Flash position: up / down" v={g.flashY ?? 0} min={-0.3} max={0.3} step={0.01} on={n => setG({ ...g, flashY: n })} />
+            </>)}
+          </Section>
+          <Section title="Sounds">
+            <SoundEditor kind="fire" label="Shot sound" value={g.fireSound} base={g.base} on={v => setG({ ...g, fireSound: v })} />
+            <SoundEditor kind="reload" label="Reload sound" value={g.reloadSound} base={g.base} on={v => setG({ ...g, reloadSound: v })} />
+          </Section>
+          <Section title="Handling">
+            <Num l="Spread (0.1 = laser accurate, 3 = sprays)" v={g.accuracy ?? 1} min={0.1} max={3} step={0.1} on={n => setG({ ...g, accuracy: n })} />
+          </Section>
           <span className={label}>Hit effect</span>
           <select className={input} value={g.effect} onChange={e => setG({ ...g, effect: e.target.value as CustomGun['effect'] })}>
             <option value="none">None</option><option value="fire">Fire (+damage, explosion)</option>
@@ -221,6 +314,29 @@ export const CreatorStudio: React.FC<{ baseGuns: string[]; onClose: () => void; 
             }} />
           </label>
           {skin && <button onClick={() => { localStorage.removeItem('ztown_my_skin_v1'); setSkin(''); }} className="w-full mt-2 py-3 bg-red-700 font-black uppercase">Remove skin</button>}
+          {skin && (<div className="mt-3">
+            <SkinPreview skinId={skin} cfg={skinCfg} gunName={skinGun} />
+            <span className={label}>Gun it holds in the preview</span>
+            <select className={input} value={skinGun} onChange={e => setSkinGun(e.target.value)}>
+              {[...guns.map(x => x.name), ...baseGuns].map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <button onClick={() => patchSkin({ pose: !skinCfg.pose })} className={`w-full mt-3 py-2 text-xs font-black uppercase ${skinCfg.pose ? 'bg-amber-600' : 'bg-white/10'}`}>Bend arms to hold gun: {skinCfg.pose ? 'on (T-pose models only)' : 'off (solid, never twisted)'}</button>
+            {!skinCfg.pose && (<>
+              <div className="flex gap-1 mt-3 items-center">
+                <span className="text-[11px] text-white/60 w-24">Facing</span>
+                {[0, 90, 180, 270].map(d => <button key={d} onClick={() => patchSkin({ yaw: d > 180 ? d - 360 : d })} className={`px-2 py-1 text-xs font-black ${skinCfg.yaw === (d > 180 ? d - 360 : d) ? 'bg-amber-600' : 'bg-white/10'}`}>{d}°</button>)}
+              </div>
+              <Num l="Fine turn (deg)" v={skinCfg.yaw} min={-180} max={180} step={1} on={n => patchSkin({ yaw: n })} />
+            </>)}
+            <Num l="Height (metres)" v={skinCfg.height} min={0.8} max={3.5} step={0.05} on={n => patchSkin({ height: n })} />
+            {!skinCfg.pose && (<>
+              <Num l="Gun size" v={skinCfg.gunScale} min={0.3} max={3} step={0.05} on={n => patchSkin({ gunScale: n })} />
+              <Num l="Gun left / right" v={skinCfg.gunX} min={-0.6} max={0.6} step={0.01} on={n => patchSkin({ gunX: n })} />
+              <Num l="Gun up / down" v={skinCfg.gunY} min={-0.6} max={0.6} step={0.01} on={n => patchSkin({ gunY: n })} />
+              <Num l="Gun forward / back" v={skinCfg.gunZ} min={-0.6} max={0.6} step={0.01} on={n => patchSkin({ gunZ: n })} />
+            </>)}
+            <button onClick={() => { setSkinCfg({ yaw: 0, height: 1.8, pose: false, gunX: 0, gunY: 0, gunZ: 0, gunScale: 1 }); saveSkinCfg({ yaw: 0, height: 1.8, pose: false, gunX: 0, gunY: 0, gunZ: 0, gunScale: 1 }); }} className="w-full mt-2 py-2 bg-white/10 text-xs font-black uppercase">Reset skin settings</button>
+          </div>)}
           <button onClick={onSaved} className="w-full mt-4 py-3 bg-amber-600 font-black uppercase">Apply (game reloads)</button>
         </div>)}
       </div>
