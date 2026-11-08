@@ -1,6 +1,0 @@
-{
-  "appId": "com.red9spendawg.ztown",
-  "appName": "Z-Town Red9&Spendawg",
-  "webDir": "dist",
-  "server": { "androidScheme": "https" }
-}
