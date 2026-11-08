@@ -2,7 +2,7 @@ import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
-import { GLBBoundary, getSharedEnv, shrinkSceneTextures } from './GLBProp';
+import { GLBBoundary, getSharedEnv, shrinkSceneTextures, isTooHeavy } from './GLBProp';
 import { WeaponModel } from './Scene';
 import { addUserModel, listUserModels, resolveModelUrl, subscribeUserModels, UserModel } from '../userModels';
 import { DEFAULT_GLB_FIT, getCustomGlb, getGunGlbOverride, setGunGlbOverride, subscribeGunFit, GunGlbOverride } from '../customContent';
@@ -25,7 +25,9 @@ const FitModel: React.FC<{ url: string; size?: number }> = ({ url, size = 2.4 })
   const { scene } = useGLTF(resolveModelUrl(url)) as any;
   shrinkSceneTextures(scene, 1024);
   const { gl } = useThree();
+  const heavy = useMemo(() => isTooHeavy(scene), [scene]);
   const model = useMemo(() => {
+    if (heavy) { const hg = new THREE.Group(); hg.add(new THREE.Mesh(new THREE.BoxGeometry(size, size, size), new THREE.MeshStandardMaterial({ color: '#6b7280', wireframe: true }))); return hg; }
     const clone = scene.clone(true) as THREE.Object3D;
     const env = getSharedEnv(gl);
     clone.traverse((o: any) => {
@@ -40,13 +42,13 @@ const FitModel: React.FC<{ url: string; size?: number }> = ({ url, size = 2.4 })
     clone.position.set(-c.x, -c.y, -c.z);
     const g = new THREE.Group(); g.add(clone); g.scale.setScalar(k);
     return g;
-  }, [scene, gl, size]);
+  }, [scene, gl, size, heavy]);
   return <primitive object={model} />;
 };
 
 export const GlbStage: React.FC<{ url?: string | null; className?: string; children?: React.ReactNode; empty?: string }> = ({ url, className = '', children, empty }) => (
   <div className={`relative bg-gradient-to-b from-zinc-800 to-black ${className}`}>
-    <Canvas dpr={[1, 1.5]} camera={{ position: [2.6, 1.3, 3.2], fov: 38 }} gl={{ antialias: true, powerPreference: 'low-power' }}>
+    <Canvas dpr={[1, 1.25]} camera={{ position: [2.6, 1.3, 3.2], fov: 38 }} gl={{ antialias: false, powerPreference: 'low-power' }} onCreated={({ gl }) => { gl.domElement.addEventListener('webglcontextlost', (ev) => ev.preventDefault(), false); }}>
       <ambientLight intensity={0.7} />
       <directionalLight position={[4, 6, 5]} intensity={2} />
       <directionalLight position={[-4, 2, -3]} intensity={0.8} color="#7dd3fc" />

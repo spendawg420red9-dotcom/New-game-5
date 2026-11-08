@@ -75,7 +75,7 @@ export interface AssetCategory {
 export interface AssetDefinition {
   id: string;
   name: string;
-  category: 'buildings' | 'props' | 'terrain' | 'perks' | 'stations' | 'wallbuys' | 'spawns' | 'custom' | 'mymodels';
+  category: 'buildings' | 'props' | 'terrain' | 'perks' | 'stations' | 'wallbuys' | 'spawns' | 'mp' | 'custom' | 'mymodels';
   icon: string;
   description: string;
   type: 'building' | 'object' | 'perk' | 'station' | 'wallbuy' | 'spawn_player' | 'spawn_zombie';
@@ -87,7 +87,7 @@ export interface AssetDefinition {
   label?: string;
   cost?: number;
   interactableType?: string;
-  objectType?: 'box' | 'wall' | 'cylinder' | 'building' | 'streetlight' | 'mushroom' | 'tree' | 'crow' | 'sphere' | 'pyramid' | 'custom' | 'platform' | 'ramp' | 'stairs' | 'hill' | 'pit' | 'ladder';
+  objectType?: 'box' | 'wall' | 'cylinder' | 'screen' | 'building' | 'streetlight' | 'mushroom' | 'tree' | 'crow' | 'sphere' | 'pyramid' | 'custom' | 'platform' | 'ramp' | 'stairs' | 'hill' | 'pit' | 'ladder';
   emissive?: string;
   emissiveIntensity?: number;
   metalness?: number;
@@ -115,6 +115,7 @@ export const ASSET_CATEGORIES: AssetCategory[] = [
   { id: 'stations', name: 'Stations & Goal', icon: '⭐' },
   { id: 'wallbuys', name: 'Wall Weapons', icon: '🔫' },
   { id: 'spawns', name: 'Spawns', icon: '🎯' },
+  { id: 'mp', name: 'Multiplayer', icon: '⚔️' },
 ];
 
 export const ASSET_CATALOG: AssetDefinition[] = [
@@ -325,6 +326,18 @@ export const ASSET_CATALOG: AssetDefinition[] = [
   },
 
   // --- PROPS & WALLS ---
+  {
+    id: 'prop_video_screen',
+    name: 'Video Screen',
+    category: 'props',
+    icon: '📺',
+    description: 'A screen that plays your video (add it with the Video button after you place it). Put it on a wall or on a stand.',
+    type: 'object',
+    objectType: 'screen',
+    defaultArgs: [8, 4.5, 0.25],
+    color: '#0b0b0b',
+    posY: 3,
+  },
   {
     id: 'prop_concrete_wall',
     name: 'Concrete Wall',
@@ -859,6 +872,20 @@ export const ASSET_CATALOG: AssetDefinition[] = [
     interactableType: 'WALLBUY: Bowie Knife',
     cost: 3000,
   },
+
+  // --- MULTIPLAYER MARKERS (used when you build a map for Multiplayer; they are hidden in the match) ---
+  ...(() => {
+    const M = (id: string, name: string, icon: string, description: string, label: string, defaultArgs: [number, number, number], color: string): AssetDefinition =>
+      ({ id, name, category: 'mp', icon, description, type: 'object', objectType: 'cylinder', defaultArgs, color, label, behavior: 'decor', emissive: color, emissiveIntensity: 0.8 });
+    return [
+      M('mp_spawn_t1', 'Team 1 Spawn', '🟢', 'Where Team 1 (green) players and bots start / respawn. Place a few.', 'mp:spawn1', [2.5, 0.3, 2.5], '#10b981'),
+      M('mp_spawn_t2', 'Team 2 Spawn', '🔴', 'Where Team 2 (red) players and bots start / respawn. Place a few.', 'mp:spawn2', [2.5, 0.3, 2.5], '#ef4444'),
+      M('mp_spawn_ffa', 'Free-For-All Spawn', '🟡', 'Spawn spot used in Free For All and Gun Game. Place lots, spread out.', 'mp:ffa', [2.5, 0.3, 2.5], '#eab308'),
+      M('mp_hardpoint', 'Hardpoint Zone', '🟣', 'A capture zone for Hardpoint. Zones take turns being active, in the order you place them.', 'mp:hardpoint', [16, 0.2, 16], '#a855f7'),
+      M('mp_flag_t1', 'Team 1 Flag (CTF)', '🚩', 'Team 1 base and flag for Capture The Flag. Only the last one you place counts.', 'mp:flag1', [3, 4, 3], '#10b981'),
+      M('mp_flag_t2', 'Team 2 Flag (CTF)', '🏴', 'Team 2 base and flag for Capture The Flag. Only the last one you place counts.', 'mp:flag2', [3, 4, 3], '#ef4444'),
+    ];
+  })(),
 
   // --- SPAWNS ---
   {
@@ -2037,4 +2064,30 @@ export const duplicateCustomMap = (map: MapConfig): MapConfig => {
   copy.id = newMapId();
   copy.name = `${map.name} copy`.slice(0, 28);
   return copy;
+};
+
+
+/** True for the multiplayer marker pieces (spawns, hardpoint zones, flags). They are never drawn or solid in a match. */
+export const isMpMarker = (o: { label?: string }) => !!o.label && o.label.startsWith('mp:');
+
+/**
+ * Turns the Multiplayer markers placed in the builder into the spawn lists, hardpoint zones and flag homes the match uses.
+ * Maps with no markers play exactly as before (the match falls back to the normal spawn points / default zones).
+ */
+export const withMultiplayerMarkers = (map: MapConfig): MapConfig => {
+  const pts = (label: string): [number, number, number][] => (map.objects || [])
+    .filter(o => o.label === label)
+    .map(o => [o.pos[0], o.pos[1] - ((o.args?.[1] ?? 0.3) / 2) + 1.2, o.pos[2]] as [number, number, number]);
+  const t1 = pts('mp:spawn1'), t2 = pts('mp:spawn2'), ffa = pts('mp:ffa'), zones = pts('mp:hardpoint');
+  const f1 = pts('mp:flag1'), f2 = pts('mp:flag2');
+  const flat = (p: [number, number, number]): [number, number, number] => [p[0], 0, p[2]];
+  const next: MapConfig = { ...map };
+  if (t1.length) next.side1SpawnPoints = t1;
+  if (t2.length) next.side2SpawnPoints = t2;
+  // Free For All / Gun Game: use your FFA spawns, or (no FFA spawns) every team spawn you placed, or the map's normal spawn
+  if (ffa.length) next.spawnPoints = ffa;
+  else if (t1.length || t2.length) next.spawnPoints = [...t1, ...t2];
+  if (zones.length) next.mpHardpoints = zones.map(flat);
+  if (f1.length && f2.length) next.ctfFlags = [flat(f1[f1.length - 1]), flat(f2[f2.length - 1])];
+  return next;
 };

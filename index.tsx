@@ -3,8 +3,10 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { installProceduralTextures } from './proceduralTextures';
 import { initUserModels } from './userModels';
+import { initUserVideos } from './userVideos';
 installProceduralTextures();
 import App from './App';
+import { ErrorGuard } from './components/ErrorGuard';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -12,10 +14,10 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
-initUserModels().finally(() => {
+Promise.all([initUserModels(), initUserVideos()]).finally(() => {
   root.render(
     <React.StrictMode>
-      <App />
+      <ErrorGuard retries={1} label="app"><App /></ErrorGuard>
     </React.StrictMode>
   );
 });

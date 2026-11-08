@@ -235,7 +235,7 @@ export interface CustomSkinConfig {
 }
 
 export interface MapObject {
-  type: 'box' | 'wall' | 'cylinder' | 'plane' | 'building' | 'streetlight' | 'mushroom' | 'tree' | 'crow' | 'sphere' | 'pyramid' | 'custom'
+  type: 'box' | 'wall' | 'cylinder' | 'plane' | 'building' | 'streetlight' | 'mushroom' | 'tree' | 'crow' | 'sphere' | 'pyramid' | 'custom' | 'screen'
     // Terrain pieces (map builder): walkable ground you can stand on. See terrain.ts
     | 'platform' | 'ramp' | 'stairs' | 'hill' | 'pit' | 'ladder';
   pos: [number, number, number];
@@ -252,6 +252,9 @@ export interface MapObject {
   metalness?: number;
   roughness?: number;
   behavior?: 'solid' | 'hazard' | 'bounce' | 'spin' | 'decor';
+  // Video Screen (type 'screen'): 'uvid:<id>' from My Videos, or a web address. videoSound = play its sound (louder when you are close)
+  videoUrl?: string;
+  videoSound?: boolean;
   // Custom 3D model (GLB) drawn instead of a plain box; fills `args` size
   modelUrl?: string;
   // Solid collision boxes for the model: [centerX, centerZ, sizeX, sizeZ] as fractions of args width/depth
@@ -305,6 +308,9 @@ export interface MapConfig {
   spawnPoints: [number, number, number][];
   side1SpawnPoints?: [number, number, number][];
   side2SpawnPoints?: [number, number, number][];
+  // Multiplayer build mode (made from the Multiplayer markers in the map builder): hardpoint zones and the two CTF flag homes
+  mpHardpoints?: [number, number, number][];
+  ctfFlags?: [[number, number, number], [number, number, number]];
   craftingTablePos: [number, number, number];
   // Where the boss hearts sit (up to 3). Placed with the Dragon Heart asset; missing = the game picks random spots.
   heartSpots?: [number, number, number][];

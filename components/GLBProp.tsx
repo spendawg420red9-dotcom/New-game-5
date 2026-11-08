@@ -38,6 +38,20 @@ const shrunkScenes = new WeakSet<object>();
 const maxTextureSize = () => {
   try { return window.matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820 ? 1024 : 2048; } catch { return 2048; }
 };
+
+// A model with millions of triangles can crash a phone's graphics. Past this limit it is drawn as a plain box instead (and a warning is logged).
+const heavyCache = new WeakMap<object, boolean>();
+export const isTooHeavy = (scene: THREE.Object3D): boolean => {
+  const hit = heavyCache.get(scene); if (hit !== undefined) return hit;
+  let tris = 0;
+  try { scene.traverse((o: any) => { if (o.isMesh && o.geometry) tris += (o.geometry.index ? o.geometry.index.count : (o.geometry.attributes?.position?.count || 0)) / 3; }); } catch { /* ignore */ }
+  let phone = false;
+  try { phone = window.matchMedia('(pointer: coarse)').matches; } catch { /* ignore */ }
+  const heavy = tris > (phone ? 1500000 : 5000000);
+  if (heavy) console.warn(`[GLB] ${Math.round(tris / 1000)}k triangles is too heavy for this device - showing a box instead. Reduce the model's polygons (Blender Decimate, or a lower polycount export).`);
+  heavyCache.set(scene, heavy);
+  return heavy;
+};
 const TEXTURE_SLOTS = ['map', 'normalMap', 'metalnessMap', 'roughnessMap', 'aoMap', 'emissiveMap', 'bumpMap', 'alphaMap', 'lightMap', 'displacementMap'];
 export const shrinkSceneTextures = (scene: THREE.Object3D, limit?: number) => {
   if (!scene || shrunkScenes.has(scene)) return;
@@ -132,7 +146,13 @@ export const GLBProp: React.FC<{
   const cuts = cutouts ?? MODEL_DEFAULTS[url]?.cutouts;
   const hasCuts = !!cuts && cuts.length > 0;
 
+  const heavy = useMemo(() => isTooHeavy(scene), [scene]);
   const { model, mats } = useMemo(() => {
+    if (heavy) {
+      const hg = new THREE.Group();
+      hg.add(new THREE.Mesh(new THREE.BoxGeometry(size[0] || 1, size[1] || 1, size[2] || 1), new THREE.MeshStandardMaterial({ color: '#6b7280' })));
+      return { model: hg, mats: [] as THREE.Material[] };
+    }
     const clone = scene.clone(true);
     const env = getEnv(gl);
     const mats: THREE.Material[] = [];
@@ -171,7 +191,7 @@ export const GLBProp: React.FC<{
     g.add(clone);
     g.scale.copy(s);
     return { model: g, mats };
-  }, [scene, gl, size[0], size[1], size[2], mode, anchor]);
+  }, [scene, gl, size[0], size[1], size[2], mode, anchor, heavy]);
 
   // Doorway cut-outs: each cutout is a box (6 world-space planes that follow the object's transform).
   // Fragments inside every plane of a box are discarded in the material's shader.

@@ -5,6 +5,7 @@ import { Sky, Stars, Plane, Box, Sphere, Cylinder, Cone, Grid, Float, useTexture
 import { GLBProp, GLBBoundary, PlayerAvatar, getSharedEnv, toPlainGeometry, shrinkSceneTextures } from './GLBProp';
 import { GunGLB } from './GunGLB';
 import { perkGlbRef } from '../perkGlb';
+import { resolveVideoUrl } from '../userVideos';
 import { gunTargetLength } from '../gunFit';
 import { extractSurfacePoints, collidersFromPoints, isDefaultBox } from '../autoColliders';
 import { resolveModelName, getCustomTracer, getCustomEffect, getCustomGlb, getCustomAnim, getCustomExtras } from '../customContent';
@@ -19,7 +20,7 @@ import { EXTRA_MOVES, animateExtraMove, resetPose } from '../moves';
 import { User, Skull, Shield, Zap, Swords } from 'lucide-react';
 import * as THREE from 'three';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
-import { GameStatus, PowerUpType, MapConfig, WeaponCamo, PlayerScore, WeaponAttachment, Progression, ZombieType, GameSettings, HUDSettings, ZombieData, MultiplayerMode, GameMode } from '../types';
+import { GameStatus, PowerUpType, MapConfig, MapObject, WeaponCamo, PlayerScore, WeaponAttachment, Progression, ZombieType, GameSettings, HUDSettings, ZombieData, MultiplayerMode, GameMode } from '../types';
 import { soundService } from '../services/soundService';
 
 // @ts-ignore
@@ -760,6 +761,71 @@ const CustomGunAnim: React.FC<{ name: string; children: React.ReactNode }> = ({ 
     }
   });
   return <group ref={g}>{children}</group>;
+};
+
+
+// Props with a 3D model far from the camera are not drawn at all (big maps with lots of models stay smooth)
+const DistanceCull: React.FC<{ pos: [number, number, number]; range?: number; children: React.ReactNode }> = ({ pos, range = 140, children }) => {
+  const g = useRef<THREE.Group>(null);
+  const t = useRef(Math.random() * 0.3);
+  useFrame(({ camera }, dt) => {
+    t.current -= dt; if (t.current > 0 || !g.current) return;
+    t.current = 0.3;
+    const dx = camera.position.x - pos[0], dz = camera.position.z - pos[2];
+    g.current.visible = dx * dx + dz * dz < range * range;
+  });
+  return <group ref={g}>{children}</group>;
+};
+
+
+// Video Screen: plays a video on a wall. One <video> is shared by every screen showing the same clip,
+// it pauses when you are far away (saves the phone's battery and speed) and its sound fades in as you walk up to it.
+const videoPool = new Map<string, { video: HTMLVideoElement; tex: THREE.VideoTexture; users: number }>();
+const acquireVideo = (src: string) => {
+  let r = videoPool.get(src);
+  if (!r) {
+    const video = document.createElement('video');
+    video.src = src; video.crossOrigin = 'anonymous'; video.loop = true; video.muted = true; video.playsInline = true; video.preload = 'auto';
+    video.setAttribute('playsinline', ''); video.setAttribute('webkit-playsinline', '');
+    const tex = new THREE.VideoTexture(video);
+    tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearFilter; tex.generateMipmaps = false;
+    r = { video, tex, users: 0 }; videoPool.set(src, r);
+  }
+  r.users++;
+  return r;
+};
+const releaseVideo = (src: string) => {
+  const r = videoPool.get(src); if (!r) return;
+  if (--r.users <= 0) { try { r.video.pause(); r.video.removeAttribute('src'); r.video.load(); r.tex.dispose(); } catch { /* ignore */ } videoPool.delete(src); }
+};
+const VideoScreen: React.FC<{ obj: MapObject }> = ({ obj }) => {
+  const src = resolveVideoUrl(obj.videoUrl || '');
+  const rec = useMemo(() => (src ? acquireVideo(src) : null), [src]);
+  useEffect(() => () => { if (src) releaseVideo(src); }, [src]);
+  const t = useRef(Math.random() * 0.25);
+  const w = obj.args?.[0] ?? 8, h = obj.args?.[1] ?? 4.5, d = Math.max(0.05, obj.args?.[2] ?? 0.25);
+  useFrame(({ camera }, dt) => {
+    t.current -= dt; if (t.current > 0 || !rec) return;
+    t.current = 0.25;
+    const dx = camera.position.x - obj.pos[0], dz = camera.position.z - obj.pos[2];
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const v = rec.video;
+    if (dist > 70) { if (!v.paused) v.pause(); return; }
+    if (v.paused) { const p = v.play(); if (p && (p as any).catch) (p as any).catch(() => { /* needs a tap first - it starts after the next touch */ }); }
+    if (obj.videoSound) {
+      const vol = Math.max(0, Math.min(1, 1 - dist / 30));
+      v.volume = vol; v.muted = vol <= 0.01;
+    } else v.muted = true;
+  });
+  return (
+    <group position={obj.pos as [number, number, number]} rotation={(obj.rotation || [0, 0, 0]) as [number, number, number]}>
+      <mesh position={[0, 0, -d / 2]}><boxGeometry args={[w + 0.3, h + 0.3, d]} /><meshStandardMaterial color="#111" /></mesh>
+      <mesh position={[0, 0, 0.01]}>
+        <planeGeometry args={[w, h]} />
+        {rec ? <meshBasicMaterial map={rec.tex} toneMapped={false} /> : <meshBasicMaterial color="#050505" />}
+      </mesh>
+    </group>
+  );
 };
 
 // Muzzle flash drawn on the held gun (Creator Studio: colour, size, how long it lasts, where it sits on the barrel).
@@ -2904,6 +2970,9 @@ export const Scene: React.FC<SceneProps> = ({
   const onSurfacePoints = (url: string, pts: Float32Array | null) => {
     if (pts && pts.length) { surfacePts.current.set(url, pts); setSurfaceVer(v => v + 1); }
   };
+  const stuckT = useRef(0);
+  const stuckN = useRef(0);
+  const stuckProbe = useRef(new THREE.Vector3());
   const collisionWalls = useMemo(() => {
     const walls: Wall[] = [];
     const doorWidth = 4;
@@ -3380,9 +3449,10 @@ export const Scene: React.FC<SceneProps> = ({
     // Capture the Flag
     if (gameState.multiplayerMode === 'ctf') {
       if (!ctfRef.current) {
+        const fh = mapConfig.ctfFlags; // flag homes placed in the builder (if any)
         ctfRef.current = { flags: [
-          { home: new THREE.Vector3(-35, 0, 0), pos: new THREE.Vector3(-35, 0, 0), carrier: null },
-          { home: new THREE.Vector3(35, 0, 0), pos: new THREE.Vector3(35, 0, 0), carrier: null },
+          { home: new THREE.Vector3(fh ? fh[0][0] : -35, 0, fh ? fh[0][2] : 0), pos: new THREE.Vector3(fh ? fh[0][0] : -35, 0, fh ? fh[0][2] : 0), carrier: null },
+          { home: new THREE.Vector3(fh ? fh[1][0] : 35, 0, fh ? fh[1][2] : 0), pos: new THREE.Vector3(fh ? fh[1][0] : 35, 0, fh ? fh[1][2] : 0), carrier: null },
         ] };
       }
       const flags = ctfRef.current.flags;
@@ -3898,6 +3968,33 @@ export const Scene: React.FC<SceneProps> = ({
       if (moveVector.length() > 1) moveVector.normalize();
       moveVector.multiplyScalar(speed);
       if (onLadderRef.current) moveVector.multiplyScalar(0.35);
+    }
+
+    // Anti-stuck: if you are inside a solid wall (you spawned in one, or two buildings overlap), step to the nearest open spot
+    stuckT.current += delta;
+    if (stuckT.current > 0.15 && !isPlayerOnBus.current) {
+      stuckT.current = 0;
+      const probe = stuckProbe.current;
+      const embeddedAt = (x: number, z: number) => {
+        probe.set(x, playerPos.current.y, z);
+        for (const w of nearWalls(x, z)) { if (checkAABB(probe, w.pos, w.size)) return true; }
+        return terrainOn && terrain.blocked(x, z, feetNow, STEP_UP);
+      };
+      if (embeddedAt(playerPos.current.x, playerPos.current.z)) {
+        stuckN.current++;
+        if (stuckN.current >= 2) {
+          stuckN.current = 0;
+          const cx = playerPos.current.x, cz = playerPos.current.z;
+          search: for (let r = 1; r <= 60; r += 1) {
+            const steps = Math.max(12, Math.round(r * 8));
+            for (let k = 0; k < steps; k++) {
+              const a = (k / steps) * Math.PI * 2;
+              const nx = cx + Math.cos(a) * r, nz = cz + Math.sin(a) * r;
+              if (!embeddedAt(nx, nz)) { playerPos.current.x = nx; playerPos.current.z = nz; break search; }
+            }
+          }
+        }
+      } else stuckN.current = 0;
     }
 
     const nextPos = tempVec1.current;
@@ -6101,7 +6198,7 @@ export const Scene: React.FC<SceneProps> = ({
       
       {gameState.multiplayerMode === 'ctf' && [0, 1].map(i => {
         const col = i === 0 ? '#10b981' : '#ef4444';
-        const home = i === 0 ? [-35, 0, 0] : [35, 0, 0];
+        const home = mapConfig.ctfFlags ? mapConfig.ctfFlags[i] : (i === 0 ? [-35, 0, 0] : [35, 0, 0]);
         return (
           <React.Fragment key={'ctf' + i}>
             <Cylinder args={[3.5, 3.5, 0.2, 32]} position={[home[0], 0.1, home[2]] as any}>
@@ -6140,6 +6237,7 @@ export const Scene: React.FC<SceneProps> = ({
       {mapConfig.id === 'z-town' && <Bus posRef={busPos} rotRef={busRot} busState={busState} />}
 
       {mapConfig?.objects?.map((obj, i) => {
+        if (obj.label && obj.label.startsWith('mp:')) return null; // multiplayer markers are only for the builder
         // Skip static bus if Tranzit
         if (mapConfig.id === 'z-town' && (obj.label === 'THE BUS' || obj.label === 'TEDD')) return null;
 
@@ -6163,13 +6261,15 @@ export const Scene: React.FC<SceneProps> = ({
         if (obj.modelUrl) {
           const sz = (obj.args || [4, 4, 4]) as [number, number, number];
           return (
-            <group key={i} position={obj.pos as [number, number, number]} rotation={(obj.rotation || [0, 0, 0]) as [number, number, number]}>
+            <DistanceCull key={i} pos={obj.pos as [number, number, number]}>
+            <group position={obj.pos as [number, number, number]} rotation={(obj.rotation || [0, 0, 0]) as [number, number, number]}>
               <GLBBoundary fallback={<Box args={sz}><meshStandardMaterial color={obj.color || '#555'} /></Box>}>
                 <Suspense fallback={null}>
                   <GLBProp url={obj.modelUrl} size={sz} />
                 </Suspense>
               </GLBBoundary>
             </group>
+            </DistanceCull>
           );
         }
         if (obj.label === 'road') {
@@ -6182,6 +6282,7 @@ export const Scene: React.FC<SceneProps> = ({
         if (obj.behavior === 'spin' && obj.args && (obj.type === 'box' || obj.type === 'wall' || obj.type === 'cylinder')) {
           return <SpinningTrap key={i} obj={obj} />;
         }
+        if (obj.type === 'screen') return <VideoScreen key={i} obj={obj} />;
         if (obj.type === 'box' || obj.type === 'wall' || obj.type === 'cylinder' || obj.type === 'sphere' || obj.type === 'pyramid' || obj.type === 'custom') {
           if (obj.texture) {
             return (

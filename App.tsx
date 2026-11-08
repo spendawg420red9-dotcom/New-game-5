@@ -34,11 +34,12 @@ import { getRoundLore } from './services/geminiService';
 import { soundService } from './services/soundService';
 import { MAPS } from './maps';
 import { MapBuilderModal } from './components/MapBuilderModal';
+import { ErrorGuard } from './components/ErrorGuard';
 import { HudLayoutEditor } from './components/HudLayoutEditor';
 import { HudSkinStyle } from './components/HudSkinStyle';
 import { loadHudSkin, saveHudSkin } from './hudSkin';
 import type { HudPosKey } from './hudLayout';
-import { floorMapObjects, getActiveCustomMap, saveCustomMap, loadLocalCommunityMaps, likeLocalCommunityMap, recordCommunityMapScore, loadSavedCustomMaps, setActiveCustomMapId } from './customMapUtils';
+import { withMultiplayerMarkers, floorMapObjects, getActiveCustomMap, saveCustomMap, loadLocalCommunityMaps, likeLocalCommunityMap, recordCommunityMapScore, loadSavedCustomMaps, setActiveCustomMapId } from './customMapUtils';
 import { io, Socket } from 'socket.io-client';
 import { Skull, Target, Database, RefreshCw, Activity, ShoppingCart, Zap, Gauge, Heart, Shield, Box as BoxIcon, Crosshair, TrendingUp, Pause, Play, LogOut, PlusCircle, UserX, Wind, RotateCcw, AlertCircle, Timer, Swords, Bomb, Sun, Crosshair as HeadshotIcon, Zap as PapIcon, Trophy, User, ChevronLeft, ChevronRight, Trash2, ArrowUp, Zap as SlideIcon, Snowflake, Flame, Scissors, Hourglass, Map as MapIcon, Gamepad, Bluetooth, Keyboard, Eye, X, Gem, Egg, Wrench, Star, Medal, Award, Crown, ChevronUp, ChevronDown, CheckCircle2, Check, Droplet, CircleDot, Search, Hand, Layers, VolumeX, Lock, Unlock, UserPlus, Users, MessageSquare, MousePointer2, Move, Cpu, Copy, ZoomIn, ZoomOut, Bell } from 'lucide-react';
 
@@ -1745,7 +1746,8 @@ const App: React.FC = () => {
 
   const activeMapConfig = useMemo(() => {
     if (stats.activeMapId === 'custom_map' || customGameConfig.gameMode === 'make_your_own' || customGameConfig.mapId === 'custom_map') {
-      return customMapData;
+      // Multiplayer on your own map: the Multiplayer markers become team spawns, hardpoint zones and flag homes
+      return customGameConfig.gameMode === 'multiplayer' ? withMultiplayerMarkers(customMapData) : customMapData;
     }
     return MAPS.find(m => m.id === stats.activeMapId) || MAPS[0];
   }, [stats.activeMapId, customGameConfig.gameMode, customGameConfig.mapId, customMapData]);
@@ -5309,7 +5311,7 @@ const App: React.FC = () => {
     saveCustomMap(map);
     setCustomGameConfig(prev => ({
       ...prev,
-      gameMode: 'make_your_own',
+      gameMode: prev.gameMode === 'multiplayer' ? 'multiplayer' : 'make_your_own',
       mapId: 'custom_map',
     }));
     setShowMapBuilder(false);
@@ -5718,6 +5720,8 @@ const App: React.FC = () => {
 
   const hardpoints = useMemo(() => {
     if (customGameConfig.multiplayerMode !== 'hard_point') return [];
+    const placed = (activeMapConfig as any)?.mpHardpoints as [number, number, number][] | undefined;
+    if (placed && placed.length) return placed.map((p, i) => ({ pos: new THREE.Vector3(p[0], 0, p[2]), name: `Zone ${i + 1}` }));
     return [
       { pos: new THREE.Vector3(0, 0, 0), name: 'Center' },
       { pos: new THREE.Vector3(25, 0, 25), name: 'Northeast' },
@@ -5725,7 +5729,7 @@ const App: React.FC = () => {
       { pos: new THREE.Vector3(25, 0, -25), name: 'Southeast' },
       { pos: new THREE.Vector3(-25, 0, 25), name: 'Northwest' }
     ];
-  }, [customGameConfig.multiplayerMode]);
+  }, [customGameConfig.multiplayerMode, activeMapConfig]);
 
   useEffect(() => {
     if (status !== GameStatus.PLAYING || customGameConfig.multiplayerMode !== 'hard_point') return;
@@ -5916,6 +5920,7 @@ const App: React.FC = () => {
         />
       )}
       <div className="absolute inset-0 z-0">
+        <ErrorGuard retries={2} label="game view" onGiveUp={() => setStatus(GameStatus.START)}>
         <Canvas key={gameKey} gl={{ antialias: !gameSettings.batterySaver && window.devicePixelRatio < 2, alpha: false, stencil: false, powerPreference: 'high-performance' }} dpr={gameSettings.batterySaver ? 1 : Math.min(window.devicePixelRatio, 2)} camera={{ fov: 75, near: 0.01, far: 1000 }} onCreated={({ gl }) => { gl.domElement.addEventListener('webglcontextlost', (ev) => ev.preventDefault(), false); }}>
           <AdaptivePerformance max={gameSettings.batterySaver ? 1 : Math.min(window.devicePixelRatio, 2)} min={0.75} enabled={!gameSettings.batterySaver} />
           <Suspense fallback={null}>
@@ -6053,6 +6058,7 @@ const App: React.FC = () => {
             />
           </Suspense>
         </Canvas>
+        </ErrorGuard>
       </div>
 
       {isPlayOfTheGame && (
@@ -6274,6 +6280,21 @@ const App: React.FC = () => {
                 {stats.perks.includes('blaze') && (
                   <div className="w-7 h-7 bg-orange-600/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(234,88,12,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
                     <Flame className="text-white w-4 h-4" />
+                  </div>
+                )}
+                {stats.perks.includes('stronghold') && (
+                  <div className="w-7 h-7 bg-purple-700/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(147,51,234,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Shield className="text-white w-4 h-4" />
+                  </div>
+                )}
+                {stats.perks.includes('blood') && (
+                  <div className="w-7 h-7 bg-red-800/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(185,28,28,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Swords className="text-white w-4 h-4" />
+                  </div>
+                )}
+                {stats.perks.includes('elemental') && (
+                  <div className="w-7 h-7 bg-pink-500/90 rounded-full flex items-center justify-center border border-white/40 shadow-[0_0_6px_rgba(236,72,153,0.5)] animate-in zoom-in duration-300 backdrop-blur-sm">
+                    <Zap className="text-white w-4 h-4" />
                   </div>
                 )}
               </div>
@@ -10599,7 +10620,7 @@ const App: React.FC = () => {
                     </button>
                   ))}
                   <button
-                    onClick={() => setCustomGameConfig(prev => ({ ...prev, mapId: 'custom_map', gameMode: 'make_your_own' }))}
+                    onClick={() => setCustomGameConfig(prev => prev.gameMode === 'multiplayer' ? ({ ...prev, mapId: 'custom_map' }) : ({ ...prev, mapId: 'custom_map', gameMode: 'make_your_own' }))}
                     className={`relative group overflow-hidden rounded-sm border-2 transition-all aspect-video ${
                       customGameConfig.mapId === 'custom_map' || customGameConfig.gameMode === 'make_your_own'
                         ? 'border-fuchsia-500 ring-2 ring-fuchsia-500/50' 
@@ -10891,6 +10912,49 @@ const App: React.FC = () => {
                   {customGameConfig.gameMode === 'multiplayer' && (
                     <>
                     <MyModesPanel config={customGameConfig} onLoad={(c) => setCustomGameConfig(prev => ({ ...prev, ...c }))} />
+                    <div className="col-span-full bg-gradient-to-r from-red-950/50 via-fuchsia-950/40 to-zinc-900 border-2 border-red-500/40 p-4 rounded-sm space-y-3">
+                      {(() => {
+                        const usingMine = customGameConfig.mapId === 'custom_map';
+                        const cnt = (l: string) => (customMapData.objects || []).filter(o => o.label === l).length;
+                        return (<>
+                          <div className="flex items-center justify-between gap-2">
+                            <h4 className="text-base font-black text-white uppercase italic">🔨 Multiplayer Map Builder</h4>
+                            <button
+                              onClick={() => setCustomGameConfig(prev => ({ ...prev, mapId: usingMine ? MAPS[0].id : 'custom_map' }))}
+                              className={`px-3 py-1.5 text-[11px] font-black uppercase rounded-sm border-2 ${usingMine ? 'bg-fuchsia-600 border-fuchsia-300 text-white' : 'bg-black/50 border-white/20 text-white/60'}`}
+                            >{usingMine ? 'Playing on my map' : 'Use my map'}</button>
+                          </div>
+                          <p className="text-[11px] text-white/60">Build any map (buildings, walls, terrain, props, models, perks, wall guns) and add Multiplayer markers: team spawns, free-for-all spawns, Hardpoint zones and Capture-the-Flag bases. Then pick a Game Type, bots and Play.</p>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold text-white/50 uppercase shrink-0">My maps</span>
+                            <select
+                              value={customMapData.id}
+                              onChange={(e) => {
+                                const picked = savedCustomMaps.find(m => m.id === e.target.value);
+                                if (picked) { setCustomMapData(floorMapObjects(picked)); setActiveCustomMapId(picked.id); }
+                              }}
+                              className="flex-1 min-w-0 bg-zinc-900 border border-fuchsia-500/40 text-white text-xs font-bold rounded-sm px-2 py-1.5"
+                            >
+                              {!savedCustomMaps.some(m => m.id === customMapData.id) && <option value={customMapData.id}>{customMapData.name}</option>}
+                              {savedCustomMaps.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                            </select>
+                          </div>
+                          <button
+                            onClick={() => { setCustomGameConfig(prev => ({ ...prev, mapId: 'custom_map' })); setShowMapBuilder(true); }}
+                            className="w-full py-3 bg-red-600 hover:bg-red-500 active:scale-95 text-white font-black text-sm uppercase tracking-wider rounded-sm flex items-center justify-center gap-2"
+                          ><Wrench size={16} /> Open Map Builder (Multiplayer)</button>
+                          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-[10px] uppercase font-bold">
+                            <div className="bg-black/40 p-2 border border-white/5"><span className="text-white/40 block">Team 1</span><span className="text-emerald-400 text-base font-black">{cnt('mp:spawn1')}</span></div>
+                            <div className="bg-black/40 p-2 border border-white/5"><span className="text-white/40 block">Team 2</span><span className="text-red-400 text-base font-black">{cnt('mp:spawn2')}</span></div>
+                            <div className="bg-black/40 p-2 border border-white/5"><span className="text-white/40 block">FFA</span><span className="text-yellow-400 text-base font-black">{cnt('mp:ffa')}</span></div>
+                            <div className="bg-black/40 p-2 border border-white/5"><span className="text-white/40 block">Zones</span><span className="text-purple-400 text-base font-black">{cnt('mp:hardpoint')}</span></div>
+                            <div className="bg-black/40 p-2 border border-white/5"><span className="text-white/40 block">Flags</span><span className="text-white text-base font-black">{Math.min(cnt('mp:flag1'), 1) + Math.min(cnt('mp:flag2'), 1)}/2</span></div>
+                            <div className="bg-black/40 p-2 border border-white/5"><span className="text-white/40 block">Pieces</span><span className="text-white text-base font-black">{customMapData.objects?.length || 0}</span></div>
+                          </div>
+                          {isOnline && usingMine && <p className="text-[11px] text-amber-300">Online rooms use the built-in maps, so a match on your own map plays offline with bots.</p>}
+                        </>);
+                      })()}
+                    </div>
                     <div>
                       <label className="block text-white/60 font-bold uppercase text-xs mb-2">Game Type</label>
                       <button

@@ -1,3 +1,5 @@
+import { ShapeStudio } from './ShapeStudio';
+import { addUserVideo, listUserVideos, subscribeUserVideos, UserVideo } from '../userVideos';
 import React, { useState, useRef, useMemo, useEffect, Suspense } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Box, Cylinder, Sphere, Cone, Plane, Text, Float, Torus, Grid as DreiGrid } from '@react-three/drei';
@@ -1183,6 +1185,10 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
 
   // Modals & Panels
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [screenBusy, setScreenBusy] = useState(false);
+  const [showShapeStudio, setShowShapeStudio] = useState(false);
+  const [myVideos, setMyVideos] = useState<UserVideo[]>(() => listUserVideos());
+  useEffect(() => subscribeUserVideos(() => setMyVideos(listUserVideos())), []);
   const [isAssetMenuOpen, setIsAssetMenuOpen] = useState<boolean>(true);
   const [showDesignStudio, setShowDesignStudio] = useState(false);
   const [showPublishModal, setShowPublishModal] = useState(false);
@@ -2619,6 +2625,34 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                       }} />
                     </label>
                   )}
+                  {currentMap.objects[selectedItem.index].type === 'screen' && (
+                    <div className="flex items-center gap-1 max-w-[70vw] overflow-x-auto">
+                      <label className="shrink-0 px-2 py-1 rounded bg-sky-700 hover:bg-sky-600 border border-white/20 text-[10px] font-black uppercase cursor-pointer">
+                        {screenBusy ? 'Adding...' : '🎬 Video'}
+                        <input type="file" accept="video/*" className="hidden" disabled={screenBusy} onChange={async (e) => {
+                          const f = e.target.files?.[0]; e.target.value = ''; if (!f) return;
+                          const idx = selectedItem.index; setScreenBusy(true);
+                          try {
+                            const v = await addUserVideo(f);
+                            const objs = [...currentMap.objects]; if (objs[idx]) { objs[idx] = { ...objs[idx], videoUrl: `uvid:${v.id}` }; pushHistory({ ...currentMap, objects: objs }); }
+                            showToast('Video added to the screen');
+                          } catch (err: any) { showToast(err?.message || 'Could not add that video'); }
+                          setScreenBusy(false);
+                        }} />
+                      </label>
+                      {myVideos.length > 0 && (
+                        <select value={currentMap.objects[selectedItem.index].videoUrl || ''} onChange={(e) => { const objs = [...currentMap.objects]; objs[selectedItem.index] = { ...objs[selectedItem.index], videoUrl: e.target.value || undefined }; pushHistory({ ...currentMap, objects: objs }); }}
+                          className="shrink-0 bg-zinc-800 border border-white/20 text-white text-[10px] font-bold rounded px-1 py-1 max-w-[120px]">
+                          <option value="">No video</option>
+                          {myVideos.map(v => <option key={v.id} value={`uvid:${v.id}`}>{v.name}</option>)}
+                        </select>
+                      )}
+                      <button onClick={() => { const u = window.prompt('Paste a web address of a video (.mp4 / .webm)', ''); if (u === null) return; const objs = [...currentMap.objects]; objs[selectedItem.index] = { ...objs[selectedItem.index], videoUrl: u.trim() || undefined }; pushHistory({ ...currentMap, objects: objs }); }}
+                        className="shrink-0 px-2 py-1 rounded bg-white/10 hover:bg-white/20 border border-white/20 text-[10px] font-black uppercase">🔗 Link</button>
+                      <button onClick={() => { const objs = [...currentMap.objects]; objs[selectedItem.index] = { ...objs[selectedItem.index], videoSound: !objs[selectedItem.index].videoSound }; pushHistory({ ...currentMap, objects: objs }); }}
+                        className={`shrink-0 px-2 py-1 rounded border border-white/20 text-[10px] font-black uppercase ${currentMap.objects[selectedItem.index].videoSound ? 'bg-amber-600' : 'bg-white/10'}`}>{currentMap.objects[selectedItem.index].videoSound ? '🔊 Sound on' : '🔇 Muted'}</button>
+                    </div>
+                  )}
                   {isTerrainType(currentMap.objects[selectedItem.index].type) && (
                   <div className="flex items-center gap-1 max-w-[60vw] overflow-x-auto">
                     <span className="text-[10px] font-bold text-white/60 uppercase">Surface</span>
@@ -2940,6 +2974,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
               )}
 
               <div className="flex flex-wrap items-center gap-1.5">
+                <button onClick={() => setShowShapeStudio(true)} className="px-2.5 py-1.5 rounded-lg text-[10px] font-black border bg-amber-600 text-white border-amber-300">🎨 Shape Studio</button>
                 <button
                   onClick={() => { setManageModels(v => !v); setPickedModels([]); }}
                   className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black border ${manageModels ? 'bg-amber-500 text-black border-amber-300' : 'bg-zinc-800 text-white border-white/10 hover:bg-zinc-700'}`}
@@ -3156,6 +3191,8 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
           </div>
         </div>
       )}
+
+      {showShapeStudio && <ShapeStudio folder={modelFolder !== 'All' ? modelFolder : 'Props'} onClose={() => setShowShapeStudio(false)} />}
 
       {/* Toast Notification */}
       {toastMessage && (
