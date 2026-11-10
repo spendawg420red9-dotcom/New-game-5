@@ -1,4 +1,4 @@
-import { MapConfig, MapObject } from './types';
+import { MapConfig, MapObject, MoverSpec } from './types';
 
 // ---------------------------------------------------------------------------
 // Terrain: what the player / zombies / bots can stand on.
@@ -13,6 +13,29 @@ import { MapConfig, MapObject } from './types';
 // Maps that use none of these (and have no void floor) get `active: false`, and the game skips every
 // bit of this code, so older maps run exactly as before and cost nothing.
 // ---------------------------------------------------------------------------
+
+
+/** Shared clock for moving platforms (the game sets MOVER.t every frame; everything that moves reads it). */
+export const MOVER = { t: 0 };
+/** Where a moving platform is, as an offset from the spot it was placed, at time t seconds. */
+export const moverOffset = (m: MoverSpec, t: number): [number, number, number] => {
+  const ph = t + (m.phase || 0);
+  if (m.mode === 'circle') {
+    const r = Math.max(Math.abs(m.dx), Math.abs(m.dz), 1);
+    const a = (ph * Math.max(0.2, m.speed)) / r;
+    return [m.dx * Math.sin(a), 0, m.dz * (Math.cos(a) - 1)];
+  }
+  const len = Math.hypot(m.dx, m.dy, m.dz);
+  if (len < 0.01) return [0, 0, 0];
+  const travel = len / Math.max(0.2, m.speed);
+  const wait = Math.max(0, m.wait);
+  const cycle = 2 * (travel + wait);
+  const p = ((ph % cycle) + cycle) % cycle;
+  let s = 0;
+  if (p < travel) s = p / travel; else if (p < travel + wait) s = 1; else if (p < 2 * travel + wait) s = 1 - (p - travel - wait) / travel; else s = 0;
+  s = s * s * (3 - 2 * s);
+  return [m.dx * s, m.dy * s, m.dz * s];
+};
 
 export const TERRAIN_TYPES: MapObject['type'][] = ['platform', 'ramp', 'stairs', 'hill', 'pit', 'ladder'];
 export const isTerrainType = (t: string): boolean => (TERRAIN_TYPES as string[]).includes(t);
@@ -58,6 +81,8 @@ interface Piece {
   bottom: number;
   /** Surface height at x,z, or NaN when the piece is not there. `m` widens the footprint (used for collision only). */
   top: (x: number, z: number, m: number) => number;
+  /** Moving platforms only: the same as `top`, but for time t */
+  topT?: (x: number, z: number, m: number, t: number) => number;
 }
 
 interface Pit {
@@ -86,13 +111,15 @@ export interface Terrain {
   ladderAt: (x: number, z: number, feetY: number) => boolean;
   /** Like ladderAt but returns the ladder's bottom/top so the player can top-out or mount from above. */
   ladderInfo: (x: number, z: number, feetY: number) => { bottom: number; top: number } | null;
+  /** If you are standing on a moving platform: how far it moved between time t0 and t1 (so you travel with it) */
+  ride: (x: number, z: number, feetY: number, t0: number, t1: number) => [number, number, number] | null;
   /** The pits, for cutting holes in the floor */
   pits: Pit[];
 }
 
 const EMPTY: Terrain = {
   active: false, half: DEFAULT_MAP_HALF, voidFloor: false, pieces: 0,
-  heightAt: () => 0, topAt: () => 0, blocked: () => false, ceilingAt: () => Infinity, hasFloor: () => true, ladderAt: () => false, ladderInfo: () => null, pits: [],
+  heightAt: () => 0, topAt: () => 0, blocked: () => false, ceilingAt: () => Infinity, hasFloor: () => true, ladderAt: () => false, ladderInfo: () => null, ride: () => null, pits: [],
 };
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
@@ -112,13 +139,23 @@ const makePiece = (o: MapObject): Piece | null => {
 
   let top: Piece['top'];
   let bottom = low;
+  let topT: Piece['topT'];
+  let sweep = [0, 0, 0, 0]; // extra reach of a moving platform: minX, maxX, minZ, maxZ
   if (o.type === 'platform') {
-    top = (x, z, m) => {
-      const dx = x - cx, dz = z - cz;
+    const mv = o.move;
+    topT = (x, z, m, tt) => {
+      const off = mv ? moverOffset(mv, tt) : [0, 0, 0];
+      const dx = x - cx - off[0], dz = z - cz - off[2];
       const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
-      if (o.label === 'round') { const a = lx / (hw + m), b = lz / (hd + m); return a * a + b * b <= 1 ? high : NaN; }
-      return Math.abs(lx) <= hw + m && Math.abs(lz) <= hd + m ? high : NaN;
+      if (o.label === 'round') { const a = lx / (hw + m), b = lz / (hd + m); return a * a + b * b <= 1 ? high + off[1] : NaN; }
+      return Math.abs(lx) <= hw + m && Math.abs(lz) <= hd + m ? high + off[1] : NaN;
     };
+    top = mv ? (x, z, m) => topT!(x, z, m, MOVER.t) : (x, z, m) => topT!(x, z, m, 0);
+    if (mv) {
+      if (mv.mode === 'circle') { const a = 2 * (Math.abs(mv.dx) + Math.abs(mv.dz)); sweep = [-a, a, -a, a]; }
+      else sweep = [Math.min(0, mv.dx), Math.max(0, mv.dx), Math.min(0, mv.dz), Math.max(0, mv.dz)];
+      bottom = low + Math.min(0, mv.dy);
+    }
   } else if (o.type === 'ramp') {
     top = (x, z, m) => {
       const dx = x - cx, dz = z - cz;
@@ -148,7 +185,10 @@ const makePiece = (o: MapObject): Piece | null => {
   } else {
     return null;
   }
-  return { src: o, kind: o.type, minX: cx - ex, maxX: cx + ex, minZ: cz - ez, maxZ: cz + ez, bottom, top };
+  const piece: Piece = { src: o, kind: o.type, minX: cx - ex + sweep[0], maxX: cx + ex + sweep[1], minZ: cz - ez + sweep[2], maxZ: cz + ez + sweep[3], bottom, top, topT: o.move ? topT : undefined };
+  // a moving platform's underside moves with it (so you can walk under one that has lifted away)
+  if (o.type === 'platform' && o.move) { const mv = o.move; Object.defineProperty(piece, 'bottom', { get: () => low + moverOffset(mv, MOVER.t)[1] }); }
+  return piece;
 };
 
 /** Builds the terrain for a map. Cheap; call it inside useMemo keyed on the map. */
@@ -262,7 +302,21 @@ export const buildTerrain = (map: MapConfig | undefined | null): Terrain => {
     return null;
   };
 
-  return { active: true, half, voidFloor, pieces: pieces.length, heightAt, topAt, blocked, ceilingAt, hasFloor, ladderAt, ladderInfo, pits };
+  const movers = pieces.filter(p => p.topT && p.src.move);
+  const ride: Terrain['ride'] = (x, z, feetY, t0, t1) => {
+    for (let i = 0; i < movers.length; i++) {
+      const p = movers[i];
+      if (x < p.minX || x > p.maxX || z < p.minZ || z > p.maxZ) continue;
+      const tp = p.topT!(x, z, 0, t0);
+      if (tp === tp && Math.abs(tp - feetY) < 0.6) {
+        const a = moverOffset(p.src.move!, t0), b = moverOffset(p.src.move!, t1);
+        return [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      }
+    }
+    return null;
+  };
+
+  return { active: true, half, voidFloor, pieces: pieces.length, heightAt, topAt, blocked, ceilingAt, hasFloor, ladderAt, ladderInfo, ride, pits };
 };
 
 /** Playable half-size of a map (what the builder, edge walls and zombie spawning use). */

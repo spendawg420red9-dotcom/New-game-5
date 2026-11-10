@@ -1,19 +1,21 @@
 
-import React, { useRef, useState, useEffect, useMemo, Suspense } from 'react';
+import React, { useRef, useState, useEffect, useMemo, useLayoutEffect, Suspense } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Sky, Stars, Plane, Box, Sphere, Cylinder, Cone, Grid, Float, useTexture, Sparkles, Text, Torus, Html, Instances, Instance, useGLTF } from '@react-three/drei';
 import { GLBProp, GLBBoundary, PlayerAvatar, getSharedEnv, toPlainGeometry, shrinkSceneTextures } from './GLBProp';
 import { GunGLB } from './GunGLB';
 import { perkGlbRef } from '../perkGlb';
 import { resolveVideoUrl } from '../userVideos';
-import { gunTargetLength } from '../gunFit';
+import { matchRules } from '../matchRules';
+import { CustomZombieBody, ZombieHat, completeBody } from './ZombieBody';
+import { gunTargetLength, viewmodelX } from '../gunFit';
 import { extractSurfacePoints, collidersFromPoints, isDefaultBox } from '../autoColliders';
 import { resolveModelName, getCustomTracer, getCustomEffect, getCustomGlb, getCustomAnim, getCustomExtras } from '../customContent';
 import { machineBaseHeight, canonicalPerkId, isBuilderMap } from '../customMapUtils';
 import { resolveModelUrl } from '../userModels';
 import { MODEL_DEFAULTS } from '../modelDefaults';
 import { useSafeTexture } from '../safeTexture';
-import { buildTerrain, isTerrainType, STEP_UP, VOID_FALL_Y } from '../terrain';
+import { buildTerrain, isTerrainType, STEP_UP, VOID_FALL_Y, MOVER, moverOffset } from '../terrain';
 import { TerrainObject, useFloorGeometry } from './TerrainPieces';
 import { getProcTexture, isProcTexture, procName } from '../proceduralTextures';
 import { EXTRA_MOVES, animateExtraMove, resetPose } from '../moves';
@@ -765,7 +767,8 @@ const CustomGunAnim: React.FC<{ name: string; children: React.ReactNode }> = ({ 
 
 
 // Props with a 3D model far from the camera are not drawn at all (big maps with lots of models stay smooth)
-const DistanceCull: React.FC<{ pos: [number, number, number]; range?: number; children: React.ReactNode }> = ({ pos, range = 140, children }) => {
+const CULL_RANGE = (() => { try { return window.matchMedia('(pointer: coarse)').matches ? 110 : 160; } catch { return 140; } })();
+const DistanceCull: React.FC<{ pos: [number, number, number]; range?: number; children: React.ReactNode }> = ({ pos, range = CULL_RANGE, children }) => {
   const g = useRef<THREE.Group>(null);
   const t = useRef(Math.random() * 0.3);
   useFrame(({ camera }, dt) => {
@@ -826,6 +829,57 @@ const VideoScreen: React.FC<{ obj: MapObject }> = ({ obj }) => {
       </mesh>
     </group>
   );
+};
+
+
+// Moving platform: draws its child at the platform's current spot (the game keeps the same clock for the walking surface)
+const MoverGroup: React.FC<{ move: NonNullable<MapObject['move']>; children: React.ReactNode }> = ({ move, children }) => {
+  const g = useRef<THREE.Group>(null);
+  useFrame(() => { const o = g.current; if (!o) return; const m = moverOffset(move, MOVER.t); o.position.set(m[0], m[1], m[2]); });
+  return <group ref={g}>{children}</group>;
+};
+
+
+// Lots of plain walls / boxes: drawn in a few batches (one draw per look instead of one per piece) so big maps stay smooth.
+// Only simple solid or decor boxes are batched; anything that animates, hurts, opens or is a marker is drawn one by one as before.
+const batchOff = (): boolean => { try { return localStorage.getItem('ztown_no_batch') === '1'; } catch { return false; } };
+export const isBatchable = (o: MapObject): boolean =>
+  (o.type === 'box' || o.type === 'wall') && !!o.args && !o.doorId && !o.move && !(o.label && o.label.startsWith('mp:')) &&
+  (!o.behavior || o.behavior === 'solid' || o.behavior === 'decor') && !batchOff();
+
+const BoxGroup: React.FC<{ list: MapObject[] }> = ({ list }) => {
+  const first = list[0];
+  const procTex = first.texture && isProcTexture(first.texture) ? procName(first.texture) : null;
+  const loadedTex = useSafeTexture(procTex || !first.texture ? null : first.texture);
+  const tex = (procTex ? getProcTexture(procTex) : loadedTex) || undefined;
+  const ref = useRef<THREE.InstancedMesh>(null);
+  useLayoutEffect(() => {
+    const im = ref.current; if (!im) return;
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), p = new THREE.Vector3(), sc = new THREE.Vector3();
+    list.forEach((o, i) => {
+      const a = o.args || [2, 2, 2]; const r = o.rotation || [0, 0, 0];
+      p.set(o.pos[0], o.pos[1], o.pos[2]); e.set(r[0], r[1], r[2]); q.setFromEuler(e); sc.set(a[0], a[1], a[2]);
+      m.compose(p, q, sc); im.setMatrixAt(i, m);
+    });
+    im.count = list.length; im.instanceMatrix.needsUpdate = true;
+  }, [list]);
+  return (
+    <instancedMesh key={list.length} ref={ref} args={[undefined as any, undefined as any, list.length]} frustumCulled={false}>
+      <boxGeometry args={[1, 1, 1]} />
+      <meshStandardMaterial color={first.color || '#ffffff'} map={tex} emissive={first.emissive} emissiveIntensity={first.emissiveIntensity} metalness={first.metalness} roughness={first.roughness} />
+    </instancedMesh>
+  );
+};
+const BoxBatch: React.FC<{ objs: MapObject[] }> = ({ objs }) => {
+  const groups = useMemo(() => {
+    const m = new Map<string, MapObject[]>();
+    for (const o of objs) {
+      const k = [o.color || '#ffffff', o.texture || '', o.emissive || '', o.emissiveIntensity ?? '', o.metalness ?? '', o.roughness ?? ''].join('|');
+      const l = m.get(k); if (l) l.push(o); else m.set(k, [o]);
+    }
+    return Array.from(m.entries());
+  }, [objs]);
+  return <>{groups.map(([k, list]) => <BoxGroup key={k} list={list} />)}</>;
 };
 
 // Muzzle flash drawn on the held gun (Creator Studio: colour, size, how long it lasts, where it sits on the barrel).
@@ -2829,6 +2883,9 @@ export const Scene: React.FC<SceneProps> = ({
     }));
     
     mapConfig.objects.forEach(obj => {
+      if ((obj.type === 'box' || obj.type === 'wall') && obj.doorId && obj.args && !openDoors.includes(obj.doorId)) {
+        items.push({ id: obj.doorId, type: `Open ${obj.label || 'DOOR'} Door`, cost: obj.doorCost || 1000, pos: new THREE.Vector3(obj.pos[0], 1.5, obj.pos[2]), color: '#fff' });
+      }
       if (obj.type === 'building' && obj.doorId && !openDoors.includes(obj.doorId)) {
         const size = new THREE.Vector3(...obj.args);
         const pos = new THREE.Vector3(...obj.pos);
@@ -2970,9 +3027,14 @@ export const Scene: React.FC<SceneProps> = ({
   const onSurfacePoints = (url: string, pts: Float32Array | null) => {
     if (pts && pts.length) { surfacePts.current.set(url, pts); setSurfaceVer(v => v + 1); }
   };
+  const prevMoverT = useRef(0);
+  const teleStand = useRef(0);
+  const teleCool = useRef(0);
   const stuckT = useRef(0);
   const stuckN = useRef(0);
   const stuckProbe = useRef(new THREE.Vector3());
+  const batchObjs = useMemo(() => (mapConfig.objects || []).filter(isBatchable), [mapConfig]);
+  const teleporters = useMemo(() => (mapConfig.objects || []).filter(o => o.type === 'platform' && o.teleport && o.args), [mapConfig]);
   const collisionWalls = useMemo(() => {
     const walls: Wall[] = [];
     const doorWidth = 4;
@@ -3026,6 +3088,8 @@ export const Scene: React.FC<SceneProps> = ({
              size: new THREE.Vector3(doorWidth, size.y/2, t) 
            });
         }
+      } else if ((obj.type === 'box' || obj.type === 'wall') && obj.doorId && openDoors.includes(obj.doorId)) {
+        // a bought door is gone
       } else if (obj.type === 'box' || obj.type === 'wall') {
         // Walls can be turned to any angle: approximate the rotated slab with a row of small boxes.
         addRotatedBox(obj.pos[0], obj.pos[1], obj.pos[2], 0, 0, obj.args[0], obj.args[2], obj.args[1], obj.rotation?.[1] || 0);
@@ -3670,7 +3734,7 @@ export const Scene: React.FC<SceneProps> = ({
 
     // Jumping Logic
     if (jumpRequest.current && isGrounded.current && gameMode !== 'dead_ops') {
-      verticalVelocity.current = 8;
+      verticalVelocity.current = matchRules.lowGravity ? 7 : 8;
       isGrounded.current = false;
       soundService.playThrow(); // Using throw sound as a placeholder for jump grunt/thud
       
@@ -3690,6 +3754,35 @@ export const Scene: React.FC<SceneProps> = ({
           red9JumpCount.current = 0;
         }
       }
+    }
+
+    // Moving platforms: ride along while standing on one
+    MOVER.t = state.clock.elapsedTime;
+    if (prevMoverT.current === 0) prevMoverT.current = MOVER.t;
+    if (terrain.active && !isPlayerOnBus.current && isGrounded.current) {
+      const r = terrain.ride(playerPos.current.x, playerPos.current.z, groundYRef.current, prevMoverT.current, MOVER.t);
+      if (r) { playerPos.current.x += r[0]; playerPos.current.z += r[2]; }
+    }
+    prevMoverT.current = MOVER.t;
+    // Teleporter pads: stand on one for a moment and you are sent to the pad it is linked to
+    if (teleCool.current > 0) teleCool.current -= delta;
+    if (teleporters.length && isGrounded.current && teleCool.current <= 0 && !gameState.isDowned) {
+      let on: typeof teleporters[number] | null = null;
+      for (const tp of teleporters) {
+        const a = tp.args as [number, number, number];
+        const mvo = tp.move ? moverOffset(tp.move, MOVER.t) : [0, 0, 0];
+        if (Math.abs(playerPos.current.x - tp.pos[0] - mvo[0]) < a[0] / 2 && Math.abs(playerPos.current.z - tp.pos[2] - mvo[2]) < a[2] / 2 && Math.abs(groundYRef.current - (tp.pos[1] + a[1] / 2 + mvo[1])) < 0.8) { on = tp; break; }
+      }
+      if (on) {
+        teleStand.current += delta;
+        if (teleStand.current > 0.6) {
+          const dest = on.teleport as [number, number, number];
+          playerPos.current.x = dest[0]; playerPos.current.z = dest[2];
+          groundYRef.current = dest[1]; playerPos.current.y = dest[1] + 1.2;
+          verticalVelocity.current = 0; isGrounded.current = true;
+          teleStand.current = 0; teleCool.current = 2.5;
+        }
+      } else teleStand.current = 0;
     }
 
     // Gravity
@@ -3746,7 +3839,7 @@ export const Scene: React.FC<SceneProps> = ({
     }
 
     if (!isGrounded.current) {
-      if (!onLadderRef.current) verticalVelocity.current -= 25 * delta;
+      if (!onLadderRef.current) verticalVelocity.current -= (matchRules.lowGravity ? 9 : 25) * delta;
       // bump your head on the underside of a platform
       if (terrainOn && verticalVelocity.current > 0 && terrain.ceilingAt(playerPos.current.x, playerPos.current.z, feetNow) < playerPos.current.y + 0.35) verticalVelocity.current = 0;
       playerPos.current.y += verticalVelocity.current * delta;
@@ -3822,6 +3915,7 @@ export const Scene: React.FC<SceneProps> = ({
     }
 
     let speed = gameState.perks.includes('stamin') ? 18 : 13.5;
+    speed *= matchRules.speed; // Custom Game > Mini-game rules
     if (gameState.perks.includes('blaze')) speed *= 1.2;
     if (sprintRequest.current && !aimRequest.current) speed *= 1.6;
     if (aimRequest.current) speed *= 0.6;
@@ -4785,7 +4879,7 @@ export const Scene: React.FC<SceneProps> = ({
     // Update Viewmodel Position & Sway
     if (viewmodelRef.current) {
       // Base offset relative to camera
-      const offset = new THREE.Vector3(0.25, -0.3, -0.5);
+      const offset = new THREE.Vector3(viewmodelX((camera as THREE.PerspectiveCamera).fov || 75, state.size.width / Math.max(1, state.size.height)), -0.3, -0.5);
       
       // Apply bobbing based on movement
       const isMoving = Math.abs(moveInput.current.x) > 0.1 || Math.abs(moveInput.current.y) > 0.1;
@@ -6194,7 +6288,7 @@ export const Scene: React.FC<SceneProps> = ({
       {weather === 'rain' && <Rain playerPosRef={playerPos} opacity={rainOpacity.current} />}
       <Ground mapConfig={mapConfig} pits={terrain.pits} />
       {mapConfig.showDebris !== false && <Debris count={50} range={200} />}
-      {mapConfig.showGrid !== false && !terrain.voidFloor && <Grid args={[400, 400]} cellColor="#006600" sectionColor="#00aa00" fadeDistance={150} position={[0, -0.04, 0]} />}
+      {mapConfig.showGrid !== false && !terrain.voidFloor && !terrain.active && <Grid args={[400, 400]} cellColor="#006600" sectionColor="#00aa00" fadeDistance={150} position={[0, -0.04, 0]} />}
       
       {gameState.multiplayerMode === 'ctf' && [0, 1].map(i => {
         const col = i === 0 ? '#10b981' : '#ef4444';
@@ -6236,8 +6330,10 @@ export const Scene: React.FC<SceneProps> = ({
 
       {mapConfig.id === 'z-town' && <Bus posRef={busPos} rotRef={busRot} busState={busState} />}
 
+      {batchObjs.length > 0 && <BoxBatch objs={batchObjs} />}
       {mapConfig?.objects?.map((obj, i) => {
         if (obj.label && obj.label.startsWith('mp:')) return null; // multiplayer markers are only for the builder
+        if (isBatchable(obj)) return null; // drawn together by <BoxBatch/>
         // Skip static bus if Tranzit
         if (mapConfig.id === 'z-town' && (obj.label === 'THE BUS' || obj.label === 'TEDD')) return null;
 
@@ -6245,7 +6341,7 @@ export const Scene: React.FC<SceneProps> = ({
         if (mapConfig.id === 't_dogs_land' && (obj.type === 'mushroom' || obj.type === 'tree' || obj.label === 'chocolate_bar')) return null;
 
         if (isTerrainType(obj.type)) {
-          return <TerrainObject key={i} obj={obj} />;
+          return obj.move ? <MoverGroup key={i} move={obj.move}><TerrainObject obj={obj} /></MoverGroup> : <TerrainObject key={i} obj={obj} />;
         }
         if (obj.type === 'building') {
           return <EnterableBuilding 
@@ -6283,6 +6379,7 @@ export const Scene: React.FC<SceneProps> = ({
           return <SpinningTrap key={i} obj={obj} />;
         }
         if (obj.type === 'screen') return <VideoScreen key={i} obj={obj} />;
+        if ((obj.type === 'box' || obj.type === 'wall') && obj.doorId && openDoors.includes(obj.doorId)) return null;
         if (obj.type === 'box' || obj.type === 'wall' || obj.type === 'cylinder' || obj.type === 'sphere' || obj.type === 'pyramid' || obj.type === 'custom') {
           if (obj.texture) {
             return (
@@ -8605,6 +8702,8 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
     return 1.0;
   }, [type]);
 
+  // Design Studio body (every part editable); null = the normal built-in body
+  const cb = useMemo(() => (customZombieConfig?.body && !customZombieConfig.modelUrl ? completeBody(customZombieConfig.body) : null), [customZombieConfig]);
   const frameCounter = useRef(0);
   useFrame((state, delta) => {
     if (paused) return;
@@ -8644,10 +8743,11 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
         } else {
           body.rotation.x = 0;
           body.rotation.z = moving ? sw * 0.04 : 0;
-          const reach = type === 'runner' ? -0.35 : 0;
-          if (armL.current) armL.current.rotation.x = reach + (moving ? sw * 0.18 : 0);
-          if (armR.current) armR.current.rotation.x = reach - (moving ? sw * 0.18 : 0);
-          const lg = type === 'runner' ? 0.9 : type === 'tank' || type === 'brute' ? 0.35 : 0.55;
+          const reach = (type === 'runner' ? -0.35 : 0) + (cb?.reach ?? 0);
+          const swg = cb?.swing ?? 1;
+          if (armL.current) armL.current.rotation.x = reach + (moving ? sw * 0.18 * swg : 0);
+          if (armR.current) armR.current.rotation.x = reach - (moving ? sw * 0.18 * swg : 0);
+          const lg = (type === 'runner' ? 0.9 : type === 'tank' || type === 'brute' ? 0.35 : 0.55) * swg;
           if (legL.current) legL.current.rotation.x = moving ? sw * lg : 0;
           if (legR.current) legR.current.rotation.x = moving ? -sw * lg : 0;
         }
@@ -8701,6 +8801,11 @@ const ZombieInstance: React.FC<{ position: THREE.Vector3; variant: number; hitFl
             <ModelBody url={customZombieConfig.modelUrl} scale={customZombieConfig.modelScale ?? 1} hitFlash={hitFlash} kind={type} />
           </Suspense>
         </GLBBoundary>
+      ) : cb ? (
+        <group ref={bodyRef}>
+          <CustomZombieBody body={cb} clothing={clothingColor} skin={skinColor} eye={eyeColor} hit={hitFlash > 0} armL={armL} armR={armR} legL={legL} legR={legR} />
+          <group scale={cb.scale} position={[cb.head.x, cb.head.y - 1.9, cb.head.z]}><ZombieHat hat={customZombieConfig?.hat} /></group>
+        </group>
       ) : (<group ref={bodyRef}>
       {/* Torso */}
       <Box args={[0.6, 0.9, 0.4]} position={[0, 1.25, 0]}>

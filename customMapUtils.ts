@@ -1,4 +1,5 @@
 import { MODEL_DEFAULTS } from './modelDefaults';
+import { buildAssetPack } from './assetPack';
 import { MapConfig, MapObject, InteractableConfig, CommunityMapEntry, CustomZombieConfig, CustomSkinConfig } from './types';
 
 // ---------------------------------------------------------------------------
@@ -75,7 +76,7 @@ export interface AssetCategory {
 export interface AssetDefinition {
   id: string;
   name: string;
-  category: 'buildings' | 'props' | 'terrain' | 'perks' | 'stations' | 'wallbuys' | 'spawns' | 'mp' | 'custom' | 'mymodels';
+  category: 'buildings' | 'props' | 'terrain' | 'perks' | 'stations' | 'wallbuys' | 'spawns' | 'mp' | 'custom' | 'mymodels' | 'pk_terrain' | 'pk_traps' | 'pk_walls' | 'pk_build' | 'pk_props';
   icon: string;
   description: string;
   type: 'building' | 'object' | 'perk' | 'station' | 'wallbuy' | 'spawn_player' | 'spawn_zombie';
@@ -103,6 +104,9 @@ export interface AssetDefinition {
   // For 'object' assets with modelUrl: solid boxes [cx, cz, sx, sz] as fractions of width/depth, and exact Y placement
   colliders?: [number, number, number, number][];
   posY?: number;
+  // v20 pack: a wall the player buys (Buy Door), a platform that moves, a teleporter
+  isDoor?: boolean;
+  move?: import('./types').MoverSpec;
 }
 
 export const ASSET_CATEGORIES: AssetCategory[] = [
@@ -116,9 +120,15 @@ export const ASSET_CATEGORIES: AssetCategory[] = [
   { id: 'wallbuys', name: 'Wall Weapons', icon: '🔫' },
   { id: 'spawns', name: 'Spawns', icon: '🎯' },
   { id: 'mp', name: 'Multiplayer', icon: '⚔️' },
+  { id: 'pk_terrain', name: 'Ramps & Platforms', icon: '🛝' },
+  { id: 'pk_traps', name: 'Traps & Movers', icon: '⚠️' },
+  { id: 'pk_walls', name: 'Walls & Doors', icon: '🚪' },
+  { id: 'pk_build', name: 'More Buildings', icon: '🏢' },
+  { id: 'pk_props', name: 'Cover & Decor', icon: '📦' },
 ];
 
 export const ASSET_CATALOG: AssetDefinition[] = [
+  ...buildAssetPack(),
   // --- TERRAIN: hills, platforms, ramps, stairs and underground pits (see terrain.ts) ---
   ...(() => {
     const T = (id: string, name: string, icon: string, description: string, objectType: 'platform' | 'ramp' | 'stairs' | 'hill' | 'pit' | 'ladder', defaultArgs: [number, number, number], color: string, extra: Partial<AssetDefinition> = {}): AssetDefinition =>
@@ -1238,6 +1248,66 @@ PRESET_TEMPLATES.push({
     interactables: [],
     spawnPoints: [[0, 1.2, 0], [60, 1.2, 60], [-60, 1.2, 60], [80, 1.2, -10]],
     craftingTablePos: [0, 1.5, 12],
+    customZombies: [],
+  },
+});
+
+
+// Ready-to-play Multiplayer arena: a raised centre with ramps, cover, a lift to a high deck, a secret bunker reached by teleporter,
+// and every Multiplayer marker already placed (team spawns, free-for-all spawns, hardpoint zones, CTF flags).
+const buildMpArena = (): MapObject[] => {
+  const o: MapObject[] = [];
+  const PI = Math.PI;
+  const mk = (type: MapObject['type'], pos: [number, number, number], args: [number, number, number], color: string, extra: Partial<MapObject> = {}) => o.push({ type, pos, args, color, rotation: [0, 0, 0], behavior: 'solid', ...extra });
+  // raised centre + four ramps (the high end of a ramp faces the platform)
+  mk('platform', [0, 2, 0], [24, 4, 24], '#78716c');
+  mk('ramp', [0, 2, 20], [8, 4, 16], '#a8a29e', { rotation: [0, PI, 0] });
+  mk('ramp', [0, 2, -20], [8, 4, 16], '#a8a29e');
+  mk('ramp', [20, 2, 0], [8, 4, 16], '#a8a29e', { rotation: [0, -PI / 2, 0] });
+  mk('ramp', [-20, 2, 0], [8, 4, 16], '#a8a29e', { rotation: [0, PI / 2, 0] });
+  // low walls on the centre deck
+  mk('box', [-6, 5, 0], [1, 2, 8], '#52525b'); mk('box', [6, 5, 0], [1, 2, 8], '#52525b');
+  // cover around the map
+  for (const [x, z] of [[-30, 20], [30, -20], [-30, -25], [30, 25], [-12, 42], [12, -42], [-45, 0], [45, 0]] as [number, number][]) mk('box', [x, 1.5, z], [8, 3, 1.2], '#475569');
+  for (const [x, z] of [[-18, 30], [18, -30], [0, 45], [0, -45]] as [number, number][]) mk('cylinder', [x, 3, z], [2, 6, 2], '#a8a29e');
+  // lift up to a high side deck
+  mk('platform', [55, 3.7, 0], [16, 0.6, 16], '#64748b');
+  mk('platform', [43, 0.3, 0], [6, 0.6, 6], '#0ea5e9', { move: { dx: 0, dy: 3.4, dz: 0, speed: 3, wait: 1.5, mode: 'pingpong' }, emissive: '#0369a1', emissiveIntensity: 0.6 });
+  // secret bunker (four walls + roof) with a teleporter pad inside; the way in is a pad behind a wall in the far corner
+  mk('box', [70, 2, -60], [14, 4, 1], '#3f3f46'); mk('box', [70, 2, -74], [14, 4, 1], '#3f3f46');
+  mk('box', [63, 2, -67], [1, 4, 14], '#3f3f46'); mk('box', [77, 2, -67], [1, 4, 14], '#3f3f46');
+  mk('platform', [70, 0.15, -67], [3, 0.3, 3], '#f59e0b', { label: 'tele', teleport: [-68, 0.3, 68], emissive: '#f59e0b', emissiveIntensity: 2.5 });
+  mk('platform', [-68, 0.15, 68], [3, 0.3, 3], '#a855f7', { label: 'tele', teleport: [70, 0.3, -67], emissive: '#a855f7', emissiveIntensity: 2.5 });
+  mk('box', [-68, 2, 61], [10, 4, 1], '#3f3f46');
+  // multiplayer markers
+  const marker = (label: string, pos: [number, number, number], args: [number, number, number], color: string) => o.push({ type: 'cylinder', pos, args, color, label, rotation: [0, 0, 0], behavior: 'decor', emissive: color, emissiveIntensity: 0.8 });
+  for (const x of [-18, -9, 0, 9, 18]) marker('mp:spawn1', [x, 0.15, 62], [2.5, 0.3, 2.5], '#10b981');
+  for (const x of [-18, -9, 0, 9, 18]) marker('mp:spawn2', [x, 0.15, -62], [2.5, 0.3, 2.5], '#ef4444');
+  for (const [x, z] of [[-55, 40], [55, 40], [-55, -40], [55, -40], [0, 0], [-35, 0], [35, 0], [0, 30], [0, -30], [-25, 55], [25, -55]] as [number, number][]) marker('mp:ffa', [x, z === 0 && x === 0 ? 4.15 : 0.15, z], [2.5, 0.3, 2.5], '#eab308');
+  marker('mp:hardpoint', [0, 0.1, 0], [16, 0.2, 16], '#a855f7'); marker('mp:hardpoint', [-45, 0.1, 30], [16, 0.2, 16], '#a855f7'); marker('mp:hardpoint', [45, 0.1, -30], [16, 0.2, 16], '#a855f7');
+  marker('mp:flag1', [0, 2, 70], [3, 4, 3], '#10b981'); marker('mp:flag2', [0, 2, -70], [3, 4, 3], '#ef4444');
+  return o;
+};
+PRESET_TEMPLATES.push({
+  id: 'mp_arena',
+  name: 'Multiplayer Arena (ready to play)',
+  description: 'Raised centre with ramps, cover, a lift to a high deck and a secret teleporter bunker. Team spawns, free-for-all spawns, 3 hardpoint zones and CTF flags are already placed. Works for every multiplayer game type.',
+  map: {
+    id: 'custom_mp_arena',
+    name: 'Multiplayer Arena',
+    description: 'Fight for the middle, ride the lift, find the secret bunker.',
+    thumbnail: 'https://dummyimage.com/400x225/7f1d1d/fff.png&text=MP+ARENA',
+    floorColor: '#3f3f46',
+    floorTexture: 'https://picsum.photos/seed/asphalt/512/512',
+    skyColor: '#1e293b',
+    fogColor: '#334155',
+    fogNear: 40,
+    fogFar: 800,
+    mapSize: 160,
+    objects: buildMpArena(),
+    interactables: [],
+    spawnPoints: [[0, 1.2, 62], [0, 1.2, -62], [-55, 1.2, 40], [55, 1.2, -40]],
+    craftingTablePos: [0, 1.5, 55],
     customZombies: [],
   },
 });

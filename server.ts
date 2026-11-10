@@ -10,8 +10,15 @@ import { SEED_COMMUNITY_MAPS } from "./customMapUtils";
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
+  // A map the host built (Make Your Own) travels with the room so everyone plays on it. Only a plain, reasonably small map is accepted.
+  const okCustomMap = (m: any) => {
+    try { if (m && typeof m === 'object' && Array.isArray(m.objects) && JSON.stringify(m).length < 4_000_000) return m; } catch { /* ignore */ }
+    return undefined;
+  };
+
   const io = new Server(server, {
     path: '/socket.io',
+    maxHttpBufferSize: 6e6, // a custom map sent with a room
     cors: { 
       origin: "*",
       methods: ["GET", "POST"],
@@ -108,6 +115,7 @@ async function startServer() {
     mapId: string;
     isCustom: boolean;
     hudSettings?: any;
+    customMap?: any;
   }> = {};
 
   // Scores and shared maps are kept in a file so they survive restarts (needs a host with a disk; set DATA_DIR to a persistent folder)
@@ -213,13 +221,15 @@ async function startServer() {
           status: 'waiting',
           mapId: data.mapId || 'town',
           isCustom: !!data.isCustom,
-          hudSettings: data.hudSettings
+          hudSettings: data.hudSettings,
+          customMap: okCustomMap(data.customMap)
         };
       } else {
         rooms[roomId].host = socket.id;
         rooms[roomId].mapId = data.mapId || 'town';
         rooms[roomId].status = 'waiting';
         rooms[roomId].isCustom = !!data.isCustom;
+        rooms[roomId].customMap = okCustomMap(data.customMap);
         if (data.hudSettings) rooms[roomId].hudSettings = data.hudSettings;
       }
       

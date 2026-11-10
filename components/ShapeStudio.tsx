@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { addUserModel } from '../userModels';
+import { Motion, MOTION_KINDS, applyMotion, PartMotions } from '../motion';
 
 // Shape Studio: build a model out of shapes (boxes, pipes, elbows, cones, rings...) or draw an outline / a pipe path with your finger.
 // "Save" turns it into a real .glb in My Models, so it can be placed as a building / prop, used as a perk machine, a gun, a skin...
@@ -14,6 +15,8 @@ interface Part {
   pts?: [number, number][];   // drawn outline (kind 'drawn') or drawn pipe path (kind 'tube'), each -1..1
   depth?: number;             // thickness of a drawn shape
   wall?: number;              // pipe wall thickness 0.05..0.45 (fraction of radius)
+  fire?: Motion;              // moves when a gun made from this model fires
+  reload?: Motion;            // moves when it reloads
 }
 
 const LIBRARY: { kind: Kind; name: string; icon: string; size: [number, number, number]; color: string }[] = [
@@ -26,6 +29,92 @@ const LIBRARY: { kind: Kind; name: string; icon: string; size: [number, number, 
   { kind: 'sphere', name: 'Ball', icon: '⚽', size: [1.5, 1.5, 1.5], color: '#38bdf8' },
   { kind: 'capsule', name: 'Capsule', icon: '💊', size: [1, 2, 1], color: '#a78bfa' },
   { kind: 'wedge', name: 'Ramp / Wedge', icon: '📐', size: [2, 1, 3], color: '#52525b' },
+];
+
+
+// ---- ready-made starting points (guns point towards the front, -Z; their moving parts are already set up) ----
+type PartInit = Omit<Part, 'id'>;
+const P = (kind: Kind, color: string, size: [number, number, number], pos: [number, number, number], rot: [number, number, number] = [0, 0, 0], extra: Partial<Part> = {}): PartInit =>
+  ({ kind, color, size, pos, rot, wall: 0.15, ...extra });
+const mo = (kind: Motion['kind'], axis: Motion['axis'], amount: number, dur: number): Motion => ({ kind, axis, amount, dur });
+const TEMPLATES: { name: string; icon: string; build: () => PartInit[] }[] = [
+  { name: 'Pistol', icon: '🔫', build: () => [
+    P('box', '#3f3f46', [0.4, 0.36, 1.8], [0, 1.25, -0.1], [0, 0, 0], { fire: mo('slide', 'z', 0.45, 0.15) }),
+    P('box', '#27272a', [0.38, 1.0, 0.5], [0, 0.65, 0.6], [12, 0, 0]),
+    P('cylinder', '#18181b', [0.2, 0.7, 0.2], [0, 1.25, -1.15], [90, 0, 0]),
+    P('box', '#52525b', [0.3, 0.7, 0.36], [0, 0.35, 0.62], [12, 0, 0], { reload: mo('drop', 'y', -1.4, 1.2) }),
+    P('box', '#18181b', [0.1, 0.1, 0.5], [0, 0.95, 0.15]),
+  ] },
+  { name: 'Revolver', icon: '🤠', build: () => [
+    P('box', '#52525b', [0.38, 0.5, 1.4], [0, 1.25, 0]),
+    P('cylinder', '#71717a', [0.62, 0.9, 0.62], [0, 1.2, -0.2], [90, 0, 0], { fire: mo('spin', 'y', 0, 0.2), reload: mo('spin', 'y', 0, 1.0) }),
+    P('cylinder', '#27272a', [0.2, 1.5, 0.2], [0, 1.35, -1.2], [90, 0, 0]),
+    P('box', '#78350f', [0.34, 1.0, 0.5], [0, 0.65, 0.65], [18, 0, 0]),
+  ] },
+  { name: 'Rifle', icon: '🎯', build: () => [
+    P('box', '#3f3f46', [0.5, 0.6, 3.0], [0, 1.3, -0.3]),
+    P('cylinder', '#18181b', [0.22, 1.8, 0.22], [0, 1.4, -2.4], [90, 0, 0]),
+    P('box', '#27272a', [0.45, 0.9, 1.3], [0, 1.1, 1.6], [-8, 0, 0]),
+    P('box', '#52525b', [0.4, 1.1, 0.5], [0, 0.55, 0.3], [10, 0, 0], { reload: mo('drop', 'y', -1.6, 1.3) }),
+    P('box', '#27272a', [0.34, 0.9, 0.4], [0, 0.65, 0.95], [15, 0, 0]),
+    P('box', '#18181b', [0.12, 0.12, 0.5], [0.3, 1.55, 0.0], [0, 0, 0], { fire: mo('slide', 'z', 0.35, 0.12) }),
+    P('box', '#27272a', [0.3, 0.25, 0.6], [0, 1.75, -0.5]),
+  ] },
+  { name: 'Shotgun', icon: '💥', build: () => [
+    P('cylinder', '#27272a', [0.3, 3.2, 0.3], [0, 1.4, -1.0], [90, 0, 0]),
+    P('cylinder', '#3f3f46', [0.26, 2.2, 0.26], [0, 1.08, -0.5], [90, 0, 0]),
+    P('box', '#78350f', [0.42, 0.5, 1.0], [0, 1.0, -0.9], [0, 0, 0], { reload: mo('slide', 'z', 0.7, 0.6), fire: mo('slide', 'z', 0.35, 0.3) }),
+    P('box', '#3f3f46', [0.45, 0.65, 1.2], [0, 1.25, 0.8]),
+    P('box', '#78350f', [0.42, 0.9, 1.4], [0, 1.05, 2.0], [-10, 0, 0]),
+  ] },
+  { name: 'Sniper', icon: '🔭', build: () => [
+    P('box', '#27272a', [0.45, 0.55, 3.4], [0, 1.3, 0]),
+    P('cylinder', '#18181b', [0.2, 3.0, 0.2], [0, 1.4, -3.0], [90, 0, 0]),
+    P('cylinder', '#0f172a', [0.38, 1.6, 0.38], [0, 1.85, -0.2], [90, 0, 0]),
+    P('box', '#27272a', [0.45, 0.9, 1.4], [0, 1.1, 2.0], [-6, 0, 0]),
+    P('box', '#18181b', [0.5, 0.12, 0.12], [0.4, 1.5, 0.6], [0, 0, 0], { fire: mo('slide', 'z', 0.5, 0.5), reload: mo('slide', 'z', 0.5, 0.9) }),
+    P('box', '#52525b', [0.35, 0.5, 0.5], [0, 0.85, 0.3], [0, 0, 0], { reload: mo('drop', 'y', -1.1, 1.3) }),
+  ] },
+  { name: 'Ray blaster', icon: '🛸', build: () => [
+    P('capsule', '#a78bfa', [0.7, 1.9, 0.7], [0, 1.3, 0], [90, 0, 0]),
+    P('cylinder', '#22d3ee', [0.3, 1.4, 0.3], [0, 1.3, -1.6], [90, 0, 0]),
+    P('torus', '#facc15', [0.9, 0.9, 0.9], [0, 1.3, -0.6], [0, 90, 0], { fire: mo('spin', 'z', 0, 0.3), reload: mo('spin', 'z', 0, 1.0) }),
+    P('box', '#27272a', [0.4, 0.9, 0.5], [0, 0.65, 0.6], [14, 0, 0]),
+    P('sphere', '#f472b6', [0.4, 0.4, 0.4], [0, 1.8, 0.2]),
+  ] },
+  { name: 'House', icon: '🏠', build: () => [
+    P('box', '#d6d3d1', [6, 3, 6], [0, 1.5, 0]),
+    P('cone', '#b45309', [8.5, 2.6, 8.5], [0, 4.3, 0], [0, 45, 0]),
+    P('box', '#78350f', [1.3, 2.2, 0.2], [0, 1.1, 3.05]),
+    P('box', '#7dd3fc', [1.1, 1.1, 0.2], [-2, 1.7, 3.05]),
+    P('box', '#7dd3fc', [1.1, 1.1, 0.2], [2, 1.7, 3.05]),
+    P('box', '#78716c', [0.8, 2, 0.8], [2, 4.4, -1.5]),
+  ] },
+  { name: 'Tower', icon: '🗼', build: () => [
+    P('cylinder', '#a8a29e', [3, 10, 3], [0, 5, 0]),
+    P('cylinder', '#78716c', [4.2, 0.6, 4.2], [0, 10.3, 0]),
+    P('cone', '#7f1d1d', [4.4, 3.2, 4.4], [0, 12.2, 0]),
+    P('box', '#1c1917', [0.8, 1.4, 0.3], [0, 7, 1.5]),
+    P('torus', '#facc15', [4, 4, 4], [0, 8.2, 0], [90, 0, 0]),
+  ] },
+  { name: 'Bridge', icon: '🌉', build: () => [
+    P('box', '#78716c', [14, 0.5, 4], [0, 3, 0]),
+    P('box', '#57534e', [0.8, 3, 0.8], [-6.5, 1.5, 1.6]), P('box', '#57534e', [0.8, 3, 0.8], [-6.5, 1.5, -1.6]),
+    P('box', '#57534e', [0.8, 3, 0.8], [6.5, 1.5, 1.6]), P('box', '#57534e', [0.8, 3, 0.8], [6.5, 1.5, -1.6]),
+    P('box', '#a16207', [14, 0.2, 0.2], [0, 4, 1.9]), P('box', '#a16207', [14, 0.2, 0.2], [0, 4, -1.9]),
+  ] },
+  { name: 'Car', icon: '🚗', build: () => [
+    P('box', '#dc2626', [4.4, 0.9, 2], [0, 0.9, 0]),
+    P('box', '#7dd3fc', [2.2, 0.8, 1.8], [-0.2, 1.7, 0]),
+    P('cylinder', '#18181b', [0.8, 0.4, 0.8], [1.4, 0.4, 1.0], [90, 0, 0]), P('cylinder', '#18181b', [0.8, 0.4, 0.8], [1.4, 0.4, -1.0], [90, 0, 0]),
+    P('cylinder', '#18181b', [0.8, 0.4, 0.8], [-1.4, 0.4, 1.0], [90, 0, 0]), P('cylinder', '#18181b', [0.8, 0.4, 0.8], [-1.4, 0.4, -1.0], [90, 0, 0]),
+  ] },
+  { name: 'Pipe set', icon: '🛠️', build: () => [
+    P('pipe', '#64748b', [1, 4, 1], [0, 2, 0]),
+    P('elbow', '#64748b', [2, 2, 2], [1, 4, 0], [0, 0, 0]),
+    P('pipe', '#64748b', [1, 4, 1], [3, 5, 0], [0, 0, 90]),
+    P('torus', '#f59e0b', [1.4, 1.4, 1.4], [0, 3, 0], [90, 0, 0]),
+  ] },
 ];
 
 const mat = (color: string) => new THREE.MeshStandardMaterial({ color, metalness: 0.25, roughness: 0.6, side: THREE.DoubleSide });
@@ -71,13 +160,30 @@ const buildGroup = (parts: Part[]): THREE.Group => {
     if (p.kind === 'drawn') m.scale.set(p.size[0], p.size[1], p.depth ?? 0.5);
     else if (p.kind === 'tube') m.scale.set(p.size[0], p.size[1], 1);
     else m.scale.set(...p.size);
+    if (p.fire || p.reload) m.userData.zsMotion = { fire: p.fire, reload: p.reload } as PartMotions;
     g.add(m);
   });
   return g;
 };
 
-const Preview: React.FC<{ parts: Part[]; selected: number | null }> = ({ parts, selected }) => {
+const Preview: React.FC<{ parts: Part[]; selected: number | null; stamp: React.MutableRefObject<{ fire: number; reload: number }> }> = ({ parts, selected, stamp }) => {
   const group = useMemo(() => buildGroup(parts), [parts]);
+  const motions = useMemo(() => {
+    const l: { node: THREE.Object3D; base: { pos: THREE.Vector3; rot: THREE.Euler }; pm: PartMotions }[] = [];
+    group.traverse((o: any) => { const pm = o.userData?.zsMotion as PartMotions | undefined; if (pm) l.push({ node: o, base: { pos: o.position.clone(), rot: o.rotation.clone() }, pm }); });
+    return l;
+  }, [group]);
+  useFrame(() => {
+    const now = performance.now() / 1000;
+    for (const mo of motions) {
+      const mf = mo.pm.fire, mr = mo.pm.reload;
+      const pf = mf && mf.kind !== 'none' ? (now - stamp.current.fire) / Math.max(0.05, mf.dur) : 2;
+      const pr = mr && mr.kind !== 'none' ? (now - stamp.current.reload) / Math.max(0.05, mr.dur) : 2;
+      if (pr > 0 && pr < 1 && mr) applyMotion(mo.node, mo.base, mr, pr);
+      else if (pf > 0 && pf < 1 && mf) applyMotion(mo.node, mo.base, mf, pf);
+      else applyMotion(mo.node, mo.base, { kind: 'slide', axis: 'x', amount: 0, dur: 1 }, 0);
+    }
+  });
   useEffect(() => () => { group.traverse((o: any) => { if (o.isMesh) { o.geometry.dispose(); o.material.dispose(); } }); }, [group]);
   const sel = parts.find(p => p.id === selected);
   return (
@@ -146,6 +252,7 @@ export const ShapeStudio: React.FC<{ onClose: () => void; onSaved?: (modelId: st
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
   const nextId = useRef(1);
+  const stamp = useRef({ fire: -10, reload: -10 });
   const cur = parts.find(p => p.id === sel) || null;
   const patch = (p: Partial<Part>) => setParts(list => list.map(x => (x.id === sel ? { ...x, ...p } : x)));
   const add = (p: Omit<Part, 'id'>) => { const id = nextId.current++; setParts(l => [...l, { ...p, id }]); setSel(id); };
@@ -187,9 +294,13 @@ export const ShapeStudio: React.FC<{ onClose: () => void; onSaved?: (modelId: st
         <Canvas dpr={[1, 1.5]} camera={{ position: [5, 4, 6], fov: 45 }} gl={{ antialias: true, powerPreference: 'low-power' }}>
           <ambientLight intensity={0.9} /><directionalLight position={[4, 8, 5]} intensity={2.2} /><directionalLight position={[-4, 3, -3]} intensity={0.8} />
           <Grid args={[20, 20]} cellColor="#334155" sectionColor="#64748b" fadeDistance={30} position={[0, -0.01, 0]} />
-          <Preview parts={parts} selected={sel} />
+          <Preview parts={parts} selected={sel} stamp={stamp} />
           <OrbitControls makeDefault enablePan={false} target={[0, 1.2, 0]} minDistance={2} maxDistance={25} />
         </Canvas>
+      </div>
+      <div className="grid grid-cols-2 gap-px bg-white/10 shrink-0">
+        <button onClick={() => { stamp.current.fire = performance.now() / 1000; }} className="py-1.5 bg-red-800 text-[11px] font-black uppercase">▶ Test fire motion</button>
+        <button onClick={() => { stamp.current.reload = performance.now() / 1000; }} className="py-1.5 bg-zinc-800 text-[11px] font-black uppercase">▶ Test reload motion</button>
       </div>
       <div className="grid grid-cols-2 gap-px bg-white/10 shrink-0">
         <button onClick={() => setTab('shapes')} className={`py-2 text-[11px] font-black uppercase ${tab === 'shapes' ? 'bg-amber-600' : 'bg-zinc-900'}`}>Shapes & pipes</button>
@@ -198,6 +309,16 @@ export const ShapeStudio: React.FC<{ onClose: () => void; onSaved?: (modelId: st
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
         {tab === 'draw' && <DrawPad onDone={addDrawn} />}
         {tab === 'shapes' && (<>
+          <div>
+            <div className="text-[10px] font-black uppercase text-white/50 mb-1">Start from a ready-made one (guns already have moving parts)</div>
+            <div className="flex flex-wrap gap-1">
+              {TEMPLATES.map(t => <button key={t.name} onClick={() => {
+                if (parts.length && !window.confirm('Replace what you have built with this template?')) return;
+                const list = t.build().map(p => ({ ...p, id: nextId.current++ }));
+                setParts(list as Part[]); setSel(list[0].id); setName(t.name);
+              }} className="px-2 py-1.5 bg-sky-900/60 hover:bg-sky-800 text-[11px] font-black uppercase">{t.icon} {t.name}</button>)}
+            </div>
+          </div>
           <div className="grid grid-cols-3 gap-1.5">
             {LIBRARY.map(s => <button key={s.kind} onClick={() => addShape(s)} className="py-2 bg-white/10 active:bg-white/20 text-[10px] font-black uppercase leading-tight"><div className="text-lg">{s.icon}</div>{s.name}</button>)}
           </div>
@@ -217,6 +338,24 @@ export const ShapeStudio: React.FC<{ onClose: () => void; onSaved?: (modelId: st
               <Slider l="Height" v={cur.size[1]} min={0.1} max={20} step={0.1} on={n => patch({ size: [cur.size[0], n, cur.size[2]] })} />
               <Slider l="Depth" v={cur.kind === 'drawn' ? (cur.depth ?? 0.5) : cur.size[2]} min={0.1} max={20} step={0.1} on={n => cur.kind === 'drawn' ? patch({ depth: n }) : patch({ size: [cur.size[0], cur.size[1], n] })} />
               {(cur.kind === 'pipe' || cur.kind === 'elbow' || cur.kind === 'tube') && <Slider l="Pipe wall / thickness" v={cur.wall ?? 0.15} min={0.05} max={0.45} step={0.01} on={n => patch({ wall: n })} />}
+              {(['fire', 'reload'] as const).map(w => {
+                const m: Motion = cur[w] || { kind: 'none', axis: 'z', amount: 0.3, dur: w === 'fire' ? 0.15 : 1.2 };
+                const set = (p: Partial<Motion>) => patch({ [w]: { ...m, ...p } } as any);
+                return (
+                  <div key={w} className="mt-2 border-t border-white/10 pt-1">
+                    <div className="text-[10px] font-black uppercase text-amber-400">Moves when {w === 'fire' ? 'the gun fires' : 'the gun reloads'}</div>
+                    <select value={m.kind} onChange={e => set({ kind: e.target.value as any })} className="w-full bg-zinc-900 border border-white/15 text-xs font-bold px-2 py-1.5 mt-1">
+                      {MOTION_KINDS.map(k => <option key={k.id} value={k.id}>{k.name}</option>)}
+                    </select>
+                    {m.kind !== 'none' && (<>
+                      <div className="flex gap-1 mt-1">{(['x', 'y', 'z'] as const).map(a => <button key={a} onClick={() => set({ axis: a })} className={`flex-1 py-1 text-[11px] font-black uppercase ${m.axis === a ? 'bg-amber-600' : 'bg-white/10'}`}>{a === 'x' ? 'Left/right' : a === 'y' ? 'Up/down' : 'Fwd/back'}</button>)}</div>
+                      <Slider l={m.kind === 'kick' ? 'Turn (deg, minus = other way)' : 'Distance (minus = other way)'} v={m.amount} min={m.kind === 'kick' ? -120 : -3} max={m.kind === 'kick' ? 120 : 3} step={m.kind === 'kick' ? 5 : 0.05} on={n => set({ amount: n })} />
+                      <Slider l="Takes (seconds)" v={m.dur} min={0.05} max={3} step={0.05} on={n => set({ dur: n })} />
+                      <p className="text-[10px] text-white/40">{MOTION_KINDS.find(k => k.id === m.kind)?.hint}</p>
+                    </>)}
+                  </div>
+                );
+              })}
               <Slider l="Left / right" v={cur.pos[0]} min={-12} max={12} step={0.1} on={n => patch({ pos: [n, cur.pos[1], cur.pos[2]] })} />
               <Slider l="Up / down" v={cur.pos[1]} min={-2} max={14} step={0.1} on={n => patch({ pos: [cur.pos[0], n, cur.pos[2]] })} />
               <Slider l="Forward / back" v={cur.pos[2]} min={-12} max={12} step={0.1} on={n => patch({ pos: [cur.pos[0], cur.pos[1], n] })} />

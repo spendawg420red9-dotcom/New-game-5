@@ -47,7 +47,7 @@ export const isTooHeavy = (scene: THREE.Object3D): boolean => {
   try { scene.traverse((o: any) => { if (o.isMesh && o.geometry) tris += (o.geometry.index ? o.geometry.index.count : (o.geometry.attributes?.position?.count || 0)) / 3; }); } catch { /* ignore */ }
   let phone = false;
   try { phone = window.matchMedia('(pointer: coarse)').matches; } catch { /* ignore */ }
-  const heavy = tris > (phone ? 1500000 : 5000000);
+  const heavy = tris > (phone ? 700000 : 5000000);
   if (heavy) console.warn(`[GLB] ${Math.round(tris / 1000)}k triangles is too heavy for this device - showing a box instead. Reduce the model's polygons (Blender Decimate, or a lower polycount export).`);
   heavyCache.set(scene, heavy);
   return heavy;

@@ -198,6 +198,26 @@ export interface KeybindSettings {
   finisher: string;
 }
 
+/** One piece of a custom zombie's body (Design Studio > Custom Zombie > Body parts). Sizes are in metres. */
+export interface BodyPart {
+  show: boolean;
+  shape: 'box' | 'sphere' | 'cylinder' | 'cone';
+  w: number; h: number; d: number;       // size (arms: d is the length, legs: h is the length)
+  x: number; y: number; z: number;       // where it sits (arms / legs: where the shoulder / hip is)
+  color?: string;                        // empty = the zombie's normal colour for that part
+  glow?: boolean;
+}
+/** Extra parts: wings, tails, spikes, tusks, hair, a second head... stuck onto the body, head, an arm or a leg */
+export interface BodyExtra extends BodyPart { id: string; parent: 'body' | 'head' | 'armL' | 'armR' | 'legL' | 'legR'; rx: number; ry: number; rz: number; }
+export interface ZombieBody {
+  head: BodyPart; torso: BodyPart; armL: BodyPart; armR: BodyPart; legL: BodyPart; legR: BodyPart;
+  eyeSize: number; eyeSpread: number; eyeY: number; eyeZ: number;
+  extras: BodyExtra[];
+  scale: number;   // whole zombie size
+  reach: number;   // how far the arms are held out (radians, -1 .. 1)
+  swing: number;   // how much arms and legs swing when walking (0 .. 2)
+}
+
 export interface CustomZombieConfig {
   id: string;
   name: string;
@@ -212,6 +232,8 @@ export interface CustomZombieConfig {
   // Optional custom 3D model (GLB). When set, replaces the built-in blocky zombie body.
   modelUrl?: string;
   modelScale?: number;
+  // Every part of the built-in body (sizes, places, colours, extra parts). Used when there is no modelUrl.
+  body?: ZombieBody;
 }
 
 export interface ZombieSkin {
@@ -234,6 +256,9 @@ export interface CustomSkinConfig {
   glowColor?: string;
 }
 
+/** A platform that moves by itself: it travels (dx, dy, dz) metres and back at `speed` m/s, waiting `wait` s at each end. 'circle' drifts round instead. */
+export interface MoverSpec { dx: number; dy: number; dz: number; speed: number; wait: number; mode?: 'pingpong' | 'circle'; phase?: number; }
+
 export interface MapObject {
   type: 'box' | 'wall' | 'cylinder' | 'plane' | 'building' | 'streetlight' | 'mushroom' | 'tree' | 'crow' | 'sphere' | 'pyramid' | 'custom' | 'screen'
     // Terrain pieces (map builder): walkable ground you can stand on. See terrain.ts
@@ -255,6 +280,9 @@ export interface MapObject {
   // Video Screen (type 'screen'): 'uvid:<id>' from My Videos, or a web address. videoSound = play its sound (louder when you are close)
   videoUrl?: string;
   videoSound?: boolean;
+  // Moving platform (platform pieces only) and teleporter pad (platform with label 'tele': stand on it to be sent to this spot)
+  move?: MoverSpec;
+  teleport?: [number, number, number];
   // Custom 3D model (GLB) drawn instead of a plain box; fills `args` size
   modelUrl?: string;
   // Solid collision boxes for the model: [centerX, centerZ, sizeX, sizeZ] as fractions of args width/depth

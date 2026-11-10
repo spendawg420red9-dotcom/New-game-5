@@ -5,6 +5,7 @@ import { GLBBoundary } from './GLBProp';
 import { WeaponModel, WEAPONS_STATS } from './Scene';
 import { CustomGun, PREVIEW_GUN, registerPreviewGun, unregisterPreviewGun } from '../customContent';
 import { soundService } from '../services/soundService';
+import { viewmodelX } from '../gunFit';
 
 // Live 3D preview for the Creator Studio. It draws the gun you are editing (saved or not) with the SAME code the game uses,
 // from the SAME camera spot, so what you see here is what you get in your hands. Fire / Reload play the animation,
@@ -24,7 +25,7 @@ export const GunLivePreview: React.FC<{ gun: CustomGun; className?: string }> = 
     <div className="bg-black/80 border border-white/10">
       <div className={`relative bg-gradient-to-b from-slate-700 to-slate-950 overflow-hidden ${className}`}>
         <Canvas key={mode} dpr={[1, 1.5]}
-          camera={mode === 'game' ? { position: [0, 0, 0], fov: 60, near: 0.05, far: 50 } : { position: [1.3, 0.45, 0.9], fov: 40, near: 0.05, far: 50 }}
+          camera={mode === 'game' ? { position: [0, 0, 0], fov: 75, near: 0.05, far: 50 } : { position: [1.3, 0.45, 0.9], fov: 40, near: 0.05, far: 50 }}
           gl={{ antialias: true, powerPreference: 'low-power' }}>
           <ambientLight intensity={0.9} />
           <directionalLight position={[2, 4, 3]} intensity={2} />
@@ -32,7 +33,7 @@ export const GunLivePreview: React.FC<{ gun: CustomGun; className?: string }> = 
           {mode === 'game' ? (
             <>
               {/* exactly where the game holds the gun in first person */}
-              <group position={[0.25, -0.3, -0.5]}>
+              <group position={[viewmodelX(75, typeof window !== 'undefined' ? window.innerWidth / Math.max(1, window.innerHeight) : 1), -0.3, -0.5]}>
                 <Suspense fallback={null}><GLBBoundary fallback={null}><WeaponModel weaponName={PREVIEW_GUN} camo={'none' as any} /></GLBBoundary></Suspense>
               </group>
               {[-1.2, 0, 1.2].map(x => <mesh key={x} position={[x, -0.3, -4]}><boxGeometry args={[0.5, 1.6, 0.4]} /><meshStandardMaterial color="#7f1d1d" /></mesh>)}

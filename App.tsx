@@ -8,7 +8,7 @@ import { Joystick } from './components/Joystick';
 import { Scene, WEAPONS_STATS, CAMO_PROPS } from './components/Scene';
 import { applyCustomContent, loadCustomCamos, customCamoId, isCustomGun } from './customContent';
 import { CreatorStudio } from './components/CreatorStudio';
-import { MyModesPanel } from './components/MyModesPanel';
+import { MyModesPanel, peekNextPlaylistMode, advancePlaylist } from './components/MyModesPanel';
 import { AchievementEffect, loadAchievementFx } from './components/AchievementEffect';
 import { Minimap } from './components/Minimap';
 import { CrosshairView, CrosshairPanel, HudVisibilityPanel, EyeIcon } from './components/HudControls';
@@ -35,6 +35,7 @@ import { soundService } from './services/soundService';
 import { MAPS } from './maps';
 import { MapBuilderModal } from './components/MapBuilderModal';
 import { ErrorGuard } from './components/ErrorGuard';
+import { setMatchRules, matchRules } from './matchRules';
 import { HudLayoutEditor } from './components/HudLayoutEditor';
 import { HudSkinStyle } from './components/HudSkinStyle';
 import { loadHudSkin, saveHudSkin } from './hudSkin';
@@ -1570,6 +1571,9 @@ const App: React.FC = () => {
     startingPoints: 500,
     startingRound: 1,
     godMode: false,
+    ruleSpeed: 1,
+    ruleLowGravity: false,
+    ruleInstaKill: false,
     playerName: 'Player',
     botNames: ['Bot 1', 'Bot 2', 'Bot 3', 'Bot 4', 'Bot 5', 'Bot 6', 'Bot 7', 'Bot 8'],
     gameMode: 'standard' as GameMode,
@@ -1589,6 +1593,7 @@ const App: React.FC = () => {
       secondaryCamo: 'none'
     }
   });
+  const [pendingPlaylistStart, setPendingPlaylistStart] = useState(false);
   const [activeBots, setActiveBots] = useState(0);
   const [progression, setProgression] = useState<Progression>(() => {
     const saved = localStorage.getItem('ztown_progression');
@@ -1747,7 +1752,7 @@ const App: React.FC = () => {
   const activeMapConfig = useMemo(() => {
     if (stats.activeMapId === 'custom_map' || customGameConfig.gameMode === 'make_your_own' || customGameConfig.mapId === 'custom_map') {
       // Multiplayer on your own map: the Multiplayer markers become team spawns, hardpoint zones and flag homes
-      return customGameConfig.gameMode === 'multiplayer' ? withMultiplayerMarkers(customMapData) : customMapData;
+      return (customGameConfig.gameMode === 'multiplayer' || stats.activeMapId === 'custom_map') ? withMultiplayerMarkers(customMapData) : customMapData;
     }
     return MAPS.find(m => m.id === stats.activeMapId) || MAPS[0];
   }, [stats.activeMapId, customGameConfig.gameMode, customGameConfig.mapId, customMapData]);
@@ -3072,7 +3077,7 @@ const App: React.FC = () => {
     weaponTier: stats.weaponTier,
     weaponName: stats.weaponName,
     attachments: stats.attachments,
-    instaKill: instaKillExpiry > now,
+    instaKill: instaKillExpiry > now || matchRules.instaKill,
     doublePoints: doublePointsExpiry > now,
     nukeTrigger: false,
     kingRobboActive: false,
@@ -5123,12 +5128,14 @@ const App: React.FC = () => {
   };
 
   const startGame = (fromLobby = false) => {
+    setMatchRules({});
     setGameKey(prev => prev + 1);
     setIsCustomGameSession(fromLobby ? room?.isCustom : false);
     setModMenuType(fromLobby && room?.isCustom ? 'limited' : 'full');
     setActiveBots(fromLobby ? 0 : 0);
     
     if (fromLobby && room) {
+      if (room.customMap) setCustomMapData(floorMapObjects(room.customMap)); // the host's own map
       setOtherPlayers(room.players.filter((p: any) => p.id !== socket?.id).map((p: any) => ({
         id: p.id,
         name: p.name,
@@ -5175,10 +5182,11 @@ const App: React.FC = () => {
 
   const startCustomGame = () => {
     const isMakeYourOwn = customGameConfig.gameMode === 'make_your_own' || customGameConfig.mapId === 'custom_map' || customGameConfig.mapId.startsWith('community_');
-    if (isOnline && customGameConfig.gameMode === 'multiplayer' && !isMakeYourOwn) {
+    if (isOnline && customGameConfig.gameMode === 'multiplayer' && (!isMakeYourOwn || customGameConfig.mapId === 'custom_map')) {
       socket?.emit('create_room', {
         name: customGameConfig.playerName,
         mapId: customGameConfig.mapId,
+        customMap: customGameConfig.mapId === 'custom_map' ? customMapData : undefined,
         isCustom: true,
         hudSettings: hudSettings,
         customization: progression.profile?.customization,
@@ -5272,6 +5280,7 @@ const App: React.FC = () => {
       };
     });
     setGodMode(customGameConfig.godMode);
+    setMatchRules({ speed: customGameConfig.ruleSpeed ?? 1, lowGravity: !!customGameConfig.ruleLowGravity, instaKill: !!customGameConfig.ruleInstaKill });
     setTeam1Score(0);
     setTeam2Score(0);
     
@@ -5304,6 +5313,19 @@ const App: React.FC = () => {
     soundService.playRoundStart();
     setTimeout(() => setShowRoundSplash(false), 3000);
   };
+
+  // Playlist of saved modes: load the next one and start it (the effect starts it once the new rules are in place)
+  const playPlaylistMode = (restart = false) => {
+    const m = advancePlaylist(restart);
+    if (!m) return;
+    setCustomGameConfig(prev => ({ ...prev, ...m.config }));
+    setPendingPlaylistStart(true);
+  };
+  useEffect(() => {
+    if (!pendingPlaylistStart) return;
+    setPendingPlaylistStart(false);
+    startCustomGame();
+  }, [pendingPlaylistStart]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const startCustomGameWithCustomMap = (rawMap: MapConfig) => {
     const map = rawMap.autoFloor === false ? rawMap : floorMapObjects(rawMap);
@@ -8604,6 +8626,11 @@ const App: React.FC = () => {
                  </div>
               </div>
               <div className="flex flex-col gap-4">
+                {isCustomGameSession && (() => { const nx = peekNextPlaylistMode(); return nx ? (
+                  <button onClick={() => playPlaylistMode(false)} className="w-full py-5 bg-fuchsia-700 hover:bg-fuchsia-600 text-white font-black text-2xl rounded-sm shadow-2xl active:scale-95 transition-all uppercase italic tracking-tighter border-b-4 border-fuchsia-950">
+                    ▶ Next: {nx.name}
+                  </button>
+                ) : null; })()}
                 <button id="menu-item-0" onClick={() => startGame(false)} className={`w-full py-6 bg-red-800 text-white font-black text-3xl rounded-sm shadow-2xl active:scale-95 hover:bg-red-700 transition-all uppercase italic tracking-tighter border-b-4 border-red-950 flex items-center justify-center gap-4 ${selectedMenuIndex === 0 ? 'ring-4 ring-white scale-105 z-10' : ''}`}>
                    <RotateCcw size={28} /> Retry
                 </button>
@@ -10911,7 +10938,7 @@ const App: React.FC = () => {
 
                   {customGameConfig.gameMode === 'multiplayer' && (
                     <>
-                    <MyModesPanel config={customGameConfig} onLoad={(c) => setCustomGameConfig(prev => ({ ...prev, ...c }))} />
+                    <MyModesPanel config={customGameConfig} onLoad={(c) => setCustomGameConfig(prev => ({ ...prev, ...c }))} onPlayPlaylist={() => playPlaylistMode(true)} />
                     <div className="col-span-full bg-gradient-to-r from-red-950/50 via-fuchsia-950/40 to-zinc-900 border-2 border-red-500/40 p-4 rounded-sm space-y-3">
                       {(() => {
                         const usingMine = customGameConfig.mapId === 'custom_map';
@@ -10951,7 +10978,7 @@ const App: React.FC = () => {
                             <div className="bg-black/40 p-2 border border-white/5"><span className="text-white/40 block">Flags</span><span className="text-white text-base font-black">{Math.min(cnt('mp:flag1'), 1) + Math.min(cnt('mp:flag2'), 1)}/2</span></div>
                             <div className="bg-black/40 p-2 border border-white/5"><span className="text-white/40 block">Pieces</span><span className="text-white text-base font-black">{customMapData.objects?.length || 0}</span></div>
                           </div>
-                          {isOnline && usingMine && <p className="text-[11px] text-amber-300">Online rooms use the built-in maps, so a match on your own map plays offline with bots.</p>}
+                          {isOnline && usingMine && <p className="text-[11px] text-amber-300">Online: your map is sent to everyone who joins your room. Models and videos you added from your own device will not show on other players' phones.</p>}
                         </>);
                       })()}
                     </div>
@@ -11176,6 +11203,19 @@ const App: React.FC = () => {
                     </button>
                   </div>
                   )}
+
+                  <div className="p-3 bg-fuchsia-950/30 border border-fuchsia-500/30 rounded-sm space-y-2">
+                    <label className="block text-fuchsia-300 font-black uppercase text-xs">Mini-game rules (saved with the mode)</label>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/70 text-[11px] font-bold uppercase">Run speed {Math.round((customGameConfig.ruleSpeed ?? 1) * 100)}%</span>
+                      <span className="flex gap-1">
+                        <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleSpeed: Math.max(0.5, Math.round(((prev.ruleSpeed ?? 1) - 0.1) * 10) / 10) }))} className="w-9 h-8 bg-white/10 font-black rounded-sm">-</button>
+                        <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleSpeed: Math.min(2, Math.round(((prev.ruleSpeed ?? 1) + 0.1) * 10) / 10) }))} className="w-9 h-8 bg-white/10 font-black rounded-sm">+</button>
+                      </span>
+                    </div>
+                    <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleLowGravity: !prev.ruleLowGravity }))} className={`w-full p-2 rounded-sm font-black uppercase text-xs border ${customGameConfig.ruleLowGravity ? 'bg-fuchsia-600 border-fuchsia-300 text-white' : 'bg-black/50 border-white/10 text-white/50'}`}>Low gravity (floaty jumps): {customGameConfig.ruleLowGravity ? 'on' : 'off'}</button>
+                    <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleInstaKill: !prev.ruleInstaKill }))} className={`w-full p-2 rounded-sm font-black uppercase text-xs border ${customGameConfig.ruleInstaKill ? 'bg-fuchsia-600 border-fuchsia-300 text-white' : 'bg-black/50 border-white/10 text-white/50'}`}>Your shots kill in one hit: {customGameConfig.ruleInstaKill ? 'on' : 'off'}</button>
+                  </div>
 
                   <div>
                     <label className="block text-white/60 font-bold uppercase text-xs mb-2">Player Name</label>

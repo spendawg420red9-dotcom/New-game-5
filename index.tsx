@@ -4,6 +4,8 @@ import ReactDOM from 'react-dom/client';
 import { installProceduralTextures } from './proceduralTextures';
 import { initUserModels } from './userModels';
 import { initUserVideos } from './userVideos';
+import { installModelOptimizer } from './modelOptimizer';
+installModelOptimizer();
 installProceduralTextures();
 import App from './App';
 import { ErrorGuard } from './components/ErrorGuard';

@@ -7,6 +7,7 @@ import { shrinkSceneTextures, getSharedEnv } from './GLBProp';
 import { GunGlbSpec } from '../customContent';
 import { pickGunOrientation } from '../gunFit';
 import { useSafeTexture } from '../safeTexture';
+import { applyMotion, PartMotions } from '../motion';
 
 // Draws an uploaded .glb as a held gun.
 //  - NEVER stretched: one uniform scale, so the gun keeps its real proportions (the old version squashed every model into
@@ -96,6 +97,33 @@ export const GunGLB: React.FC<{
     const len = Math.max(1e-4, axis === 'x' ? built.size.x : axis === 'y' ? built.size.y : built.size.z);
     return { q, len };
   }, [built, spec.auto, spec.flip]);
+
+  // parts made in the Shape Studio can move when the gun fires / reloads (saved inside the .glb)
+  const motions = useMemo(() => {
+    const list: { node: THREE.Object3D; base: { pos: THREE.Vector3; rot: THREE.Euler }; pm: PartMotions }[] = [];
+    built.clone.traverse((o: any) => { const pm = o.userData?.zsMotion as PartMotions | undefined; if (pm && (pm.fire || pm.reload)) list.push({ node: o, base: { pos: o.position.clone(), rot: o.rotation.clone() }, pm }); });
+    return list;
+  }, [built]);
+  const stamp = useRef({ fire: -10, reload: -10 });
+  useEffect(() => {
+    if (!motions.length) return;
+    const f = () => { stamp.current.fire = performance.now() / 1000; };
+    const r = () => { stamp.current.reload = performance.now() / 1000; };
+    window.addEventListener('gun-fire', f); window.addEventListener('gun-reload', r);
+    return () => { window.removeEventListener('gun-fire', f); window.removeEventListener('gun-reload', r); };
+  }, [motions]);
+  useFrame(() => {
+    if (!motions.length) return;
+    const now = performance.now() / 1000;
+    for (const mo of motions) {
+      const mf = mo.pm.fire, mr = mo.pm.reload;
+      const pf = mf && mf.kind !== 'none' ? (now - stamp.current.fire) / Math.max(0.05, mf.dur) : 2;
+      const pr = mr && mr.kind !== 'none' ? (now - stamp.current.reload) / Math.max(0.05, mr.dur) : 2;
+      if (pr > 0 && pr < 1 && mr) applyMotion(mo.node, mo.base, mr, pr);
+      else if (pf > 0 && pf < 1 && mf) applyMotion(mo.node, mo.base, mf, pf);
+      else applyMotion(mo.node, mo.base, { kind: 'slide', axis: 'x', amount: 0, dur: 1 }, 0);
+    }
+  });
 
   // centre the model on the pivot
   useMemo(() => { built.clone.position.set(-built.center.x, -built.center.y, -built.center.z); }, [built]);

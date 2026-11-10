@@ -28,3 +28,14 @@ export const gunTargetLength = (barrelLen: number, twoHanded: boolean): number =
   const len = twoHanded ? 0.45 + barrelLen * 0.75 : 0.18 + barrelLen * 0.5;
   return Math.min(1.4, Math.max(0.25, len));
 };
+
+
+/**
+ * Sideways spot of the held gun, in metres to the right of the camera at 0.5 m in front of it.
+ * On a wide screen that is 0.25. On a tall phone screen the same spot is past the edge of the picture, so the gun is cut off and
+ * looks stretched and turned; there it is moved in so the gun sits at about the same place on the screen.
+ */
+export const viewmodelX = (fovDeg: number, aspect: number): number => {
+  const halfWidth = Math.tan((fovDeg * Math.PI) / 360) * Math.max(0.2, aspect) * 0.5;
+  return Math.max(0.04, Math.min(0.25, halfWidth * 0.55));
+};

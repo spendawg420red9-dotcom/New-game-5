@@ -1,4 +1,5 @@
 import { ShapeStudio } from './ShapeStudio';
+import { CustomZombieBody, ZombieHat, completeBody, defaultZombieBody } from './ZombieBody';
 import { addUserVideo, listUserVideos, subscribeUserVideos, UserVideo } from '../userVideos';
 import React, { useState, useRef, useMemo, useEffect, Suspense } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
@@ -11,7 +12,7 @@ import {
   ArrowDown, ArrowLeft, ArrowRight, Palette, Share2, Search,
   Undo2, Redo2, Shield, Flame, Crosshair, Users, Globe, ExternalLink, Folder, FolderPlus, Map as MapIcon
 } from 'lucide-react';
-import { MapConfig, MapObject, InteractableConfig, CustomZombieConfig, CommunityMapEntry, ZombieMixEntry } from '../types';
+import { MapConfig, MapObject, InteractableConfig, CustomZombieConfig, ZombieBody, CommunityMapEntry, ZombieMixEntry } from '../types';
 import { GLBProp, GLBBoundary } from './GLBProp';
 import { MODEL_DEFAULTS } from '../modelDefaults';
 import { forEachGlbInZip } from '../zipImport';
@@ -1361,6 +1362,8 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
         metalness: selectedAsset.metalness,
         roughness: selectedAsset.roughness,
         behavior: selectedAsset.behavior,
+        ...(selectedAsset.move ? { move: { ...selectedAsset.move } } : {}),
+        ...(selectedAsset.isDoor ? { doorId: `door_${Date.now().toString(36)}`, doorCost: selectedAsset.cost || 1000 } : {}),
         ...(selectedAsset.modelUrl ? { type: 'custom' as const, modelUrl: selectedAsset.modelUrl, colliders: MODEL_DEFAULTS[selectedAsset.modelUrl]?.colliders ?? selectedAsset.colliders ?? [[0, 0, 1, 1] as [number, number, number, number]] } : {}),
       };
 
@@ -1434,7 +1437,7 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
       copies.push({
         ...src,
         pos: [Math.round((src.pos[0] + stepX * i) * 1000) / 1000, src.pos[1], Math.round((src.pos[2] + stepZ * i) * 1000) / 1000],
-        ...(src.type === 'building' ? { doorId: `door_${Date.now().toString(36)}_${i}` } : {}),
+        ...(src.type === 'building' || src.doorId ? { doorId: `door_${Date.now().toString(36)}_${i}` } : {}),
       });
     }
     pushHistory({ ...currentMap, objects: [...currentMap.objects, ...copies] });
@@ -2625,6 +2628,53 @@ export const MapBuilderModal: React.FC<MapBuilderModalProps> = ({
                       }} />
                     </label>
                   )}
+                  {(() => {
+                    const idx = selectedItem.index; const o = currentMap.objects[idx];
+                    if (!o) return null;
+                    const patch = (p: Partial<MapObject>) => { const objs = [...currentMap.objects]; objs[idx] = { ...objs[idx], ...p }; pushHistory({ ...currentMap, objects: objs }); };
+                    const step = 'shrink-0 w-6 py-1 bg-white/10 hover:bg-white/20 rounded text-xs font-black';
+                    const lab = 'shrink-0 text-[9px] font-bold text-white/50 uppercase';
+                    const num = (label: string, val: number, set: (n: number) => void, inc: number, min: number, max: number) => (
+                      <span className="shrink-0 flex items-center gap-0.5"><span className={lab}>{label}</span>
+                        <button className={step} onClick={() => set(Math.max(min, Math.round((val - inc) * 10) / 10))}>-</button>
+                        <span className="text-[10px] font-black w-8 text-center">{val}</span>
+                        <button className={step} onClick={() => set(Math.min(max, Math.round((val + inc) * 10) / 10))}>+</button></span>);
+                    const teleList = currentMap.objects.map((p, k) => ({ p, k })).filter(({ p, k }) => k !== idx && p.type === 'platform' && p.label === 'tele');
+                    return (<>
+                      {o.doorId && (o.type === 'box' || o.type === 'wall') && (<>
+                        <div className="h-5 w-px bg-white/10" />
+                        {num('Door price', o.doorCost || 1000, n => patch({ doorCost: n }), 500, 0, 50000)}
+                      </>)}
+                      {o.type === 'platform' && (<>
+                        <div className="h-5 w-px bg-white/10" />
+                        <button onClick={() => patch({ move: o.move ? undefined : { dx: 0, dy: 6, dz: 0, speed: 3, wait: 1, mode: 'pingpong' } })}
+                          className={`shrink-0 px-2 py-1 rounded border border-white/20 text-[10px] font-black uppercase ${o.move ? 'bg-sky-600' : 'bg-white/10'}`}>{o.move ? '↕ Moves' : '↕ Make it move'}</button>
+                        {o.move && (<>
+                          <button onClick={() => patch({ move: { ...o.move!, mode: o.move!.mode === 'circle' ? 'pingpong' : 'circle' } })} className="shrink-0 px-2 py-1 rounded bg-white/10 text-[10px] font-black uppercase">{o.move.mode === 'circle' ? 'Circle' : 'There & back'}</button>
+                          {num('Left/right', o.move.dx, n => patch({ move: { ...o.move!, dx: n } }), 2, -60, 60)}
+                          {num('Up/down', o.move.dy, n => patch({ move: { ...o.move!, dy: n } }), 2, -40, 40)}
+                          {num('Fwd/back', o.move.dz, n => patch({ move: { ...o.move!, dz: n } }), 2, -60, 60)}
+                          {num('Speed', o.move.speed, n => patch({ move: { ...o.move!, speed: n } }), 0.5, 0.5, 12)}
+                          {num('Wait s', o.move.wait, n => patch({ move: { ...o.move!, wait: n } }), 0.5, 0, 10)}
+                          {num('Start delay', o.move.phase || 0, n => patch({ move: { ...o.move!, phase: n } }), 1, 0, 30)}
+                        </>)}
+                      </>)}
+                      {o.type === 'platform' && o.label === 'tele' && (<>
+                        <div className="h-5 w-px bg-white/10" />
+                        <span className={lab}>Sends you to</span>
+                        <select value="" onChange={(e) => {
+                          const k = parseInt(e.target.value, 10); if (isNaN(k)) return;
+                          const d = currentMap.objects[k]; const a = d.args || [3, 0.3, 3];
+                          const objs = [...currentMap.objects]; objs[idx] = { ...objs[idx], teleport: [d.pos[0], d.pos[1] + a[1] / 2, d.pos[2]] };
+                          pushHistory({ ...currentMap, objects: objs }); showToast('Linked. Add a pad at the other end and link it back for a two-way trip');
+                        }} className="shrink-0 bg-zinc-800 border border-white/20 text-white text-[10px] font-bold rounded px-1 py-1 max-w-[140px]">
+                          <option value="">{o.teleport ? `${o.teleport.map(n => Math.round(n)).join(', ')}` : 'Link to a pad...'}</option>
+                          {teleList.map(({ p, k }) => <option key={k} value={k}>Pad at {Math.round(p.pos[0])}, {Math.round(p.pos[2])}</option>)}
+                        </select>
+                        {o.teleport && <button onClick={() => patch({ teleport: undefined })} className="shrink-0 px-2 py-1 rounded bg-red-900/60 text-[10px] font-black uppercase">Unlink</button>}
+                      </>)}
+                    </>);
+                  })()}
                   {currentMap.objects[selectedItem.index].type === 'screen' && (
                     <div className="flex items-center gap-1 max-w-[70vw] overflow-x-auto">
                       <label className="shrink-0 px-2 py-1 rounded bg-sky-700 hover:bg-sky-600 border border-white/20 text-[10px] font-black uppercase cursor-pointer">
@@ -3289,6 +3339,7 @@ const DesignStudioModal: React.FC<DesignStudioModalProps> = ({
     onClose();
   };
 
+  const [showShapes, setShowShapes] = useState(false);
   // Custom Object State
   const [objName, setObjName] = useState('My Custom Prop');
   const [objShape, setObjShape] = useState<'box' | 'cylinder' | 'sphere' | 'pyramid'>('box');
@@ -3303,6 +3354,11 @@ const DesignStudioModal: React.FC<DesignStudioModalProps> = ({
   const [objBehavior, setObjBehavior] = useState<'solid' | 'hazard' | 'bounce' | 'decor'>('solid');
 
   // Custom Zombie State
+  const [zBody, setZBody] = useState<ZombieBody>(() => completeBody(currentMap.customZombies?.[0]?.body));
+  const [zSel, setZSel] = useState<string>('head');
+  const [zSym, setZSym] = useState(true);
+  const [zSpeed, setZSpeed] = useState(currentMap.customZombies?.[0]?.speedMultiplier ?? 1.2);
+  const [zHp, setZHp] = useState(currentMap.customZombies?.[0]?.hpMultiplier ?? 2);
   const [zombieName, setZombieName] = useState(currentMap.customZombies?.[0]?.name || 'Cyber Demon');
   const [zombieSkinColor, setZombieSkinColor] = useState(currentMap.customZombies?.[0]?.skinColor || '#0f172a');
   const [zombieHeadColor, setZombieHeadColor] = useState(currentMap.customZombies?.[0]?.headColor || '#0284c7');
@@ -3372,10 +3428,11 @@ const DesignStudioModal: React.FC<DesignStudioModalProps> = ({
       skinColor: zombieSkinColor,
       headColor: zombieHeadColor,
       eyeColor: zombieEyeColor,
-      speedMultiplier: 1.2,
-      hpMultiplier: 2.0,
+      speedMultiplier: zSpeed,
+      hpMultiplier: zHp,
       hat: zombieHat,
       textureType: 'cyber',
+      body: zBody,
     };
     // Added alongside any other custom zombies (Pickle, R9S Boss...) and put in the spawn mix
     onUpdateMap({
@@ -3434,7 +3491,14 @@ const DesignStudioModal: React.FC<DesignStudioModalProps> = ({
           >
             ✨ Meshy.ai
           </button>
+          <button
+            onClick={() => setShowShapes(true)}
+            className="flex-1 py-2 text-xs font-black uppercase rounded-lg transition-all bg-emerald-600 text-white shadow"
+          >
+            🧩 Multi-Shape
+          </button>
         </div>
+        {showShapes && <ShapeStudio folder="Props" onClose={() => setShowShapes(false)} />}
 
         {/* --- TAB 4: MESHY.AI 3D MODEL & CHARACTER IMPORTER --- */}
         {activeTab === 'meshy' && (
@@ -3852,54 +3916,13 @@ const DesignStudioModal: React.FC<DesignStudioModalProps> = ({
 
               {/* 3D Character Preview */}
               <div className="h-64 bg-zinc-950 rounded-xl border border-white/10 overflow-hidden relative">
-                <Canvas camera={{ position: [0, 1.5, 4], fov: 45 }}>
+                <Canvas camera={{ position: [0, 1.4, 4.2], fov: 45 }}>
                   <ambientLight intensity={0.7} />
                   <pointLight position={[5, 5, 5]} intensity={1.5} />
                   <Float speed={1.5} rotationIntensity={0.3} floatIntensity={0.2}>
-                    <group position={[0, -0.6, 0]}>
-                      {/* Body */}
-                      <Box args={[0.7, 1.0, 0.45]} position={[0, 0.8, 0]}>
-                        <meshStandardMaterial color={zombieSkinColor} />
-                      </Box>
-                      {/* Head */}
-                      <Box args={[0.45, 0.5, 0.5]} position={[0, 1.55, 0]}>
-                        <meshStandardMaterial color={zombieHeadColor} />
-                      </Box>
-                      {/* Eyes */}
-                      <Sphere args={[0.05, 8, 8]} position={[0.13, 1.6, 0.26]}>
-                        <meshStandardMaterial color={zombieEyeColor} emissive={zombieEyeColor} emissiveIntensity={6} />
-                      </Sphere>
-                      <Sphere args={[0.05, 8, 8]} position={[-0.13, 1.6, 0.26]}>
-                        <meshStandardMaterial color={zombieEyeColor} emissive={zombieEyeColor} emissiveIntensity={6} />
-                      </Sphere>
-                      {/* Hat */}
-                      {zombieHat === 'cowboy' && (
-                        <group position={[0, 1.82, 0]}>
-                          <Cylinder args={[0.42, 0.42, 0.05, 16]} position={[0, 0, 0]}><meshStandardMaterial color="#451a03" /></Cylinder>
-                          <Cylinder args={[0.25, 0.28, 0.2, 16]} position={[0, 0.12, 0]}><meshStandardMaterial color="#451a03" /></Cylinder>
-                        </group>
-                      )}
-                      {zombieHat === 'pumpkin' && (
-                        <Sphere args={[0.32, 16, 16]} position={[0, 1.6, 0]}>
-                          <meshStandardMaterial color="#ea580c" />
-                        </Sphere>
-                      )}
-                      {zombieHat === 'horns' && (
-                        <group position={[0, 1.8, 0]}>
-                          <Cone args={[0.08, 0.3, 8]} position={[0.18, 0.1, 0]} rotation={[0, 0, -0.3]}><meshStandardMaterial color="#dc2626" /></Cone>
-                          <Cone args={[0.08, 0.3, 8]} position={[-0.18, 0.1, 0]} rotation={[0, 0, 0.3]}><meshStandardMaterial color="#dc2626" /></Cone>
-                        </group>
-                      )}
-                      {zombieHat === 'helmet' && (
-                        <Sphere args={[0.32, 16, 16]} position={[0, 1.62, 0]}>
-                          <meshStandardMaterial color="#334155" metalness={0.8} roughness={0.2} />
-                        </Sphere>
-                      )}
-                      {zombieHat === 'halo' && (
-                        <Torus args={[0.26, 0.04, 8, 24]} position={[0, 1.95, 0]} rotation={[Math.PI / 2, 0, 0]}>
-                          <meshStandardMaterial color="#fbbf24" emissive="#f59e0b" emissiveIntensity={4} />
-                        </Torus>
-                      )}
+                    <group position={[0, -1, 0]}>
+                      <CustomZombieBody body={zBody} clothing={zombieSkinColor} skin={zombieHeadColor} eye={zombieEyeColor} />
+                      <group scale={zBody.scale} position={[zBody.head.x, zBody.head.y - 1.9, zBody.head.z]}><ZombieHat hat={zombieHat} /></group>
                     </group>
                   </Float>
                 </Canvas>
@@ -3908,6 +3931,124 @@ const DesignStudioModal: React.FC<DesignStudioModalProps> = ({
                 </span>
               </div>
             </div>
+
+            {/* --- FULL BODY CONTROL --- */}
+            {(() => {
+              const KEYS = [['head', 'Head'], ['torso', 'Body'], ['armL', 'Left arm'], ['armR', 'Right arm'], ['legL', 'Left leg'], ['legR', 'Right leg']] as const;
+              const MIRROR: Record<string, 'armL' | 'armR' | 'legL' | 'legR'> = { armL: 'armR', armR: 'armL', legL: 'legR', legR: 'legL' };
+              const isBase = (KEYS as readonly (readonly [string, string])[]).some(k => k[0] === zSel);
+              const extra = isBase ? null : zBody.extras.find(x => x.id === zSel) || null;
+              const cur: any = isBase ? (zBody as any)[zSel] : extra;
+              const upd = (p: Record<string, any>) => setZBody(bd => {
+                if (isBase) {
+                  const nb: any = { ...bd, [zSel]: { ...(bd as any)[zSel], ...p } };
+                  const m = MIRROR[zSel];
+                  if (zSym && m) { const q = { ...p }; if ('x' in q) q.x = -q.x; nb[m] = { ...nb[m], ...q }; }
+                  return nb;
+                }
+                return { ...bd, extras: bd.extras.map(x => (x.id === zSel ? { ...x, ...p } : x)) };
+              });
+              const glob = (p: Partial<ZombieBody>) => setZBody(bd => ({ ...bd, ...p }));
+              const nx = (v: number, d: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round((v + d) * 100) / 100));
+              const St: React.FC<{ l: string; v: number; on: (n: number) => void; d?: number; lo?: number; hi?: number }> = ({ l, v, on, d = 0.05, lo = -4, hi = 4 }) => (
+                <div className="flex items-center justify-between bg-zinc-800 rounded px-2 py-1">
+                  <span className="text-[10px] font-bold text-white/60 uppercase">{l}</span>
+                  <span className="flex items-center gap-1">
+                    <button onClick={() => on(nx(v, -d * 4, lo, hi))} className="w-6 h-6 bg-white/10 rounded text-[10px] font-black">--</button>
+                    <button onClick={() => on(nx(v, -d, lo, hi))} className="w-6 h-6 bg-white/10 rounded text-xs font-black">-</button>
+                    <span className="w-10 text-center text-[11px] font-mono text-white">{v}</span>
+                    <button onClick={() => on(nx(v, d, lo, hi))} className="w-6 h-6 bg-white/10 rounded text-xs font-black">+</button>
+                    <button onClick={() => on(nx(v, d * 4, lo, hi))} className="w-6 h-6 bg-white/10 rounded text-[10px] font-black">++</button>
+                  </span>
+                </div>
+              );
+              const mkExtra = (parent: any, shape: any, w: number, h: number, d: number, x: number, y: number, z: number, color: string, rx = 0, ry = 0, rz = 0, glow = false) =>
+                ({ id: `e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, parent, show: true, shape, w, h, d, x, y, z, color, glow, rx, ry, rz });
+              const addSet = (list: any[]) => { setZBody(bd => ({ ...bd, extras: [...bd.extras, ...list].slice(0, 40) })); setZSel(list[list.length - 1].id); };
+              const presets: [string, () => ZombieBody][] = [
+                ['Normal', () => defaultZombieBody()],
+                ['Brute', () => { const d = defaultZombieBody(); d.torso = { ...d.torso, w: 1.0, h: 1.1, d: 0.6, y: 1.35 }; d.head = { ...d.head, y: 2.1, w: 0.35, h: 0.38, d: 0.4 }; d.armL = { ...d.armL, w: 0.3, h: 0.3, x: -0.65, y: 1.7 }; d.armR = { ...d.armR, w: 0.3, h: 0.3, x: 0.65, y: 1.7 }; d.legL = { ...d.legL, w: 0.36, d: 0.36, x: -0.25 }; d.legR = { ...d.legR, w: 0.36, d: 0.36, x: 0.25 }; return d; }],
+                ['Skinny', () => { const d = defaultZombieBody(); d.torso = { ...d.torso, w: 0.38, h: 0.9 }; d.armL = { ...d.armL, w: 0.1, h: 0.1, d: 1.15, x: -0.25 }; d.armR = { ...d.armR, w: 0.1, h: 0.1, d: 1.15, x: 0.25 }; d.legL = { ...d.legL, w: 0.12, d: 0.12, h: 0.9, y: 0.9, x: -0.1 }; d.legR = { ...d.legR, w: 0.12, d: 0.12, h: 0.9, y: 0.9, x: 0.1 }; return d; }],
+                ['Big head', () => { const d = defaultZombieBody(); d.head = { ...d.head, w: 0.8, h: 0.85, d: 0.8, y: 2.1 }; d.eyeSize = 0.08; d.eyeSpread = 0.22; return d; }],
+                ['Long arms', () => { const d = defaultZombieBody(); d.armL = { ...d.armL, d: 1.6 }; d.armR = { ...d.armR, d: 1.6 }; return d; }],
+                ['Giant', () => { const d = defaultZombieBody(); d.scale = 2; return d; }],
+                ['Tiny', () => { const d = defaultZombieBody(); d.scale = 0.55; return d; }],
+                ['Ball head', () => { const d = defaultZombieBody(); d.head = { ...d.head, shape: 'sphere', w: 0.55, h: 0.55, d: 0.55 }; d.torso = { ...d.torso, shape: 'cylinder', w: 0.55, d: 0.55 }; return d; }],
+              ];
+              const inp = 'w-full bg-zinc-800 border border-white/10 rounded px-2 py-1.5 text-xs text-white font-bold';
+              return (
+                <div className="space-y-3 border-t border-white/10 pt-3">
+                  <div className="text-xs font-black uppercase text-amber-400">🦴 Body parts (full control)</div>
+                  <div>
+                    <div className="text-[10px] font-bold text-white/50 uppercase mb-1">Start from</div>
+                    <div className="flex flex-wrap gap-1">{presets.map(([n, fn]) => <button key={n} onClick={() => { setZBody(fn()); setZSel('head'); }} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-bold text-white/80">{n}</button>)}</div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    <St l="Whole zombie size" v={zBody.scale} on={n => glob({ scale: n })} d={0.1} lo={0.3} hi={4} />
+                    <St l="Arms held out" v={zBody.reach} on={n => glob({ reach: n })} d={0.1} lo={-1.2} hi={1.2} />
+                    <St l="Walk swing" v={zBody.swing} on={n => glob({ swing: n })} d={0.1} lo={0} hi={2.5} />
+                    <St l="Speed" v={zSpeed} on={setZSpeed} d={0.1} lo={0.3} hi={3} />
+                    <St l="Health" v={zHp} on={setZHp} d={0.25} lo={0.25} hi={10} />
+                    <St l="Eye size" v={zBody.eyeSize} on={n => glob({ eyeSize: n })} d={0.01} lo={0.01} hi={0.3} />
+                    <St l="Eye gap" v={zBody.eyeSpread} on={n => glob({ eyeSpread: n })} d={0.02} lo={0} hi={0.6} />
+                    <St l="Eye height" v={zBody.eyeY} on={n => glob({ eyeY: n })} d={0.02} lo={-0.5} hi={0.6} />
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-bold text-white/50 uppercase mb-1">Pick a part to change</div>
+                    <div className="flex flex-wrap gap-1">
+                      {KEYS.map(([k, n]) => <button key={k} onClick={() => setZSel(k)} className={`px-2 py-1 rounded text-[11px] font-black uppercase ${zSel === k ? 'bg-amber-500 text-black' : 'bg-zinc-800 text-white/70'}`}>{n}</button>)}
+                      {zBody.extras.map((x, i) => <button key={x.id} onClick={() => setZSel(x.id)} className={`px-2 py-1 rounded text-[11px] font-black uppercase ${zSel === x.id ? 'bg-purple-500 text-white' : 'bg-zinc-800 text-white/70'}`}>Extra {i + 1}</button>)}
+                    </div>
+                  </div>
+                  {cur && (
+                    <div className="space-y-1.5 bg-black/30 border border-white/10 rounded-lg p-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button onClick={() => upd({ show: !cur.show })} className={`px-2 py-1 rounded text-[11px] font-black uppercase ${cur.show ? 'bg-emerald-600' : 'bg-red-900'}`}>{cur.show ? 'Shown' : 'Hidden'}</button>
+                        <select value={cur.shape} onChange={e => upd({ shape: e.target.value })} className="bg-zinc-800 border border-white/10 rounded px-2 py-1 text-[11px] font-bold text-white">
+                          <option value="box">Box</option><option value="sphere">Ball</option><option value="cylinder">Cylinder</option><option value="cone">Cone</option>
+                        </select>
+                        <input type="color" value={cur.color || '#4d7c0f'} onChange={e => upd({ color: e.target.value })} className="w-8 h-7 rounded bg-transparent" />
+                        {cur.color && <button onClick={() => upd({ color: undefined })} className="px-2 py-1 bg-white/10 rounded text-[10px] font-bold uppercase">Normal colour</button>}
+                        <button onClick={() => upd({ glow: !cur.glow })} className={`px-2 py-1 rounded text-[11px] font-black uppercase ${cur.glow ? 'bg-amber-500 text-black' : 'bg-zinc-800 text-white/70'}`}>Glow</button>
+                        {MIRROR[zSel] && <button onClick={() => setZSym(v => !v)} className={`px-2 py-1 rounded text-[11px] font-black uppercase ${zSym ? 'bg-sky-600' : 'bg-zinc-800 text-white/70'}`}>Mirror {zSym ? 'on' : 'off'}</button>}
+                        {extra && <button onClick={() => { setZBody(bd => ({ ...bd, extras: bd.extras.filter(x => x.id !== extra.id) })); setZSel('head'); }} className="px-2 py-1 bg-red-900 rounded text-[11px] font-black uppercase">Delete</button>}
+                      </div>
+                      {extra && (
+                        <select value={extra.parent} onChange={e => upd({ parent: e.target.value })} className={inp}>
+                          <option value="body">Stuck to the body</option><option value="head">Stuck to the head</option><option value="armL">Stuck to the left arm</option><option value="armR">Stuck to the right arm</option><option value="legL">Stuck to the left leg</option><option value="legR">Stuck to the right leg</option>
+                        </select>
+                      )}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        <St l="Width" v={cur.w} on={n => upd({ w: n })} lo={0.02} hi={4} />
+                        <St l="Height" v={cur.h} on={n => upd({ h: n })} lo={0.02} hi={4} />
+                        <St l="Depth / length" v={cur.d} on={n => upd({ d: n })} lo={0.02} hi={4} />
+                        <St l="Left / right" v={cur.x} on={n => upd({ x: n })} />
+                        <St l="Up / down" v={cur.y} on={n => upd({ y: n })} />
+                        <St l="Front / back" v={cur.z} on={n => upd({ z: n })} />
+                        {extra && <St l="Tilt forward" v={extra.rx} on={n => upd({ rx: n })} d={5} lo={-180} hi={180} />}
+                        {extra && <St l="Turn" v={extra.ry} on={n => upd({ ry: n })} d={5} lo={-180} hi={180} />}
+                        {extra && <St l="Lean sideways" v={extra.rz} on={n => upd({ rz: n })} d={5} lo={-180} hi={180} />}
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <div className="text-[10px] font-bold text-white/50 uppercase mb-1">Add extra parts</div>
+                    <div className="flex flex-wrap gap-1">
+                      <button onClick={() => addSet([mkExtra('body', 'box', 0.9, 0.05, 0.6, 0.55, 1.6, -0.35, '#3f3f46', 0, -25, 20), mkExtra('body', 'box', 0.9, 0.05, 0.6, -0.55, 1.6, -0.35, '#3f3f46', 0, 25, -20)])} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-bold text-white/80">🦇 Wings</button>
+                      <button onClick={() => addSet([mkExtra('body', 'cone', 0.12, 0.9, 0.12, 0, 0.7, -0.5, '#7f1d1d', -70, 0, 0)])} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-bold text-white/80">🦎 Tail</button>
+                      <button onClick={() => addSet([mkExtra('head', 'box', 0.08, 0.2, 0.5, 0, 0.3, 0, '#dc2626')])} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-bold text-white/80">🎸 Mohawk</button>
+                      <button onClick={() => addSet([mkExtra('head', 'cone', 0.06, 0.2, 0.06, 0.12, -0.15, 0.22, '#f5f5f4', 180, 0, 0), mkExtra('head', 'cone', 0.06, 0.2, 0.06, -0.12, -0.15, 0.22, '#f5f5f4', 180, 0, 0)])} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-bold text-white/80">🐗 Tusks</button>
+                      <button onClick={() => addSet([mkExtra('body', 'cone', 0.2, 0.4, 0.2, 0.5, 1.75, 0, '#6b7280', 0, 0, -30), mkExtra('body', 'cone', 0.2, 0.4, 0.2, -0.5, 1.75, 0, '#6b7280', 0, 0, 30)])} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-bold text-white/80">🔱 Shoulder spikes</button>
+                      <button onClick={() => addSet([mkExtra('armL', 'cone', 0.05, 0.3, 0.05, 0, 0, 1.05, '#d4d4d8', 90, 0, 0), mkExtra('armR', 'cone', 0.05, 0.3, 0.05, 0, 0, 1.05, '#d4d4d8', 90, 0, 0)])} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-bold text-white/80">🗡️ Claws</button>
+                      <button onClick={() => addSet([mkExtra('body', 'box', 0.45, 0.6, 0.25, 0, 1.3, -0.3, '#365314')])} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-bold text-white/80">🎒 Backpack</button>
+                      <button onClick={() => addSet([mkExtra('head', 'box', 0.3, 0.35, 0.3, 0.28, 0.1, 0, '#4d7c0f')])} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-bold text-white/80">👥 Lump / 2nd head</button>
+                      <button onClick={() => addSet([mkExtra('body', 'sphere', 0.3, 0.3, 0.3, 0, 1.3, 0.25, '#ef4444', 0, 0, 0, true)])} className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-[11px] font-bold text-white/80">💥 Glowing core</button>
+                      <button onClick={() => addSet([mkExtra('body', 'box', 0.3, 0.3, 0.3, 0, 1.3, 0.4, '#a855f7')])} className="px-2 py-1 bg-purple-700 hover:bg-purple-600 rounded text-[11px] font-black text-white">+ Blank part</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             <button
               onClick={handleSaveZombie}
