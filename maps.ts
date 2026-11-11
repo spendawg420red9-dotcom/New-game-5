@@ -206,11 +206,11 @@ export const MAPS: MapConfig[] = [
     objects: [
       // Yellow House (West) - Scaled Up 1.5x
       { type: 'building', pos: [-65, 7.5, 0], args: [30, 15, 38], color: "#eab308", label: "YELLOW HOUSE", lightColor: "#ffffaa", doorCost: 750, doorId: "yellow_house_door" },
-      { type: 'building', pos: [-65, 6, 30], args: [18, 12, 22], color: "#ca8a04", label: "GARAGE", lightColor: "#ffffaa", doorCost: 500, doorId: "yellow_garage_door" },
+      { type: 'building', pos: [-65, 6, 30], args: [18, 12, 22], color: "#ca8a04", label: "GARAGE", lightColor: "#ffffaa", doorCost: 500, doorId: "yellow_garage_door", backDoor: true },
       
       // Green House (East) - Scaled Up 1.5x
       { type: 'building', pos: [65, 7.5, 0], args: [30, 15, 38], color: "#22c55e", label: "GREEN HOUSE", lightColor: "#aaffaa", doorCost: 750, doorId: "green_house_door" },
-      { type: 'building', pos: [65, 6, 30], args: [18, 12, 22], color: "#16a34a", label: "GARAGE", lightColor: "#aaffaa", doorCost: 500, doorId: "green_garage_door" },
+      { type: 'building', pos: [65, 6, 30], args: [18, 12, 22], color: "#16a34a", label: "GARAGE", lightColor: "#aaffaa", doorCost: 500, doorId: "green_garage_door", backDoor: true },
       
       // Vehicles & Obstacles - Scaled Up
       { type: 'box', pos: [0, 3.5, -30], args: [9, 7, 27], color: '#475569', texture: 'https://picsum.photos/seed/bus/512/512' }, // Bus

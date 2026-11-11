@@ -280,6 +280,8 @@ export interface MapObject {
   // Video Screen (type 'screen'): 'uvid:<id>' from My Videos, or a web address. videoSound = play its sound (louder when you are close)
   videoUrl?: string;
   videoSound?: boolean;
+  // Building only: also cut a doorway in the BACK wall (so two buildings placed back to front make one long building with a door between)
+  backDoor?: boolean;
   // Moving platform (platform pieces only) and teleporter pad (platform with label 'tele': stand on it to be sent to this spot)
   move?: MoverSpec;
   teleport?: [number, number, number];

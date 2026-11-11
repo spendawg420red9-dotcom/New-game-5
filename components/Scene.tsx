@@ -399,7 +399,7 @@ const BuildingDetails: React.FC<{ size: THREE.Vector3; windows: { pos: number[];
   );
 });
 
-const EnterableBuilding: React.FC<{ pos: THREE.Vector3; size: THREE.Vector3; color: string; label: string; lightColor: string; isOpen?: boolean }> = React.memo(({ pos, size, color, label, lightColor, isOpen }) => {
+const EnterableBuilding: React.FC<{ pos: THREE.Vector3; size: THREE.Vector3; color: string; label: string; lightColor: string; isOpen?: boolean; backDoor?: boolean }> = React.memo(({ pos, size, color, label, lightColor, isOpen, backDoor }) => {
   const thickness = 0.5;
   const doorWidth = 4;
   const wallTextureOriginal = useTexture('https://picsum.photos/seed/brickwall/512/512');
@@ -432,11 +432,12 @@ const EnterableBuilding: React.FC<{ pos: THREE.Vector3; size: THREE.Vector3; col
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < colsX; c++) {
         const x = -size.x/2 + (c + 0.5) * (size.x / colsX);
+        if (backDoor && r === 0 && Math.abs(x) < doorWidth / 2 + 1) continue; // the back doorway
         win.push({ pos: [x, -size.y/2 + r * 3 + 1.5, -size.z/2 - 0.26], args: [1, 1.5, 0.1] });
       }
     }
     return win;
-  }, [size]);
+  }, [size, backDoor]);
 
   return (
     <group position={pos}>
@@ -446,9 +447,20 @@ const EnterableBuilding: React.FC<{ pos: THREE.Vector3; size: THREE.Vector3; col
       </Plane>
       
       {/* Walls */}
+      {backDoor ? (
+        <group position={[0, 0, -size.z / 2]}>
+          <Box args={[(size.x - doorWidth) / 2, size.y, thickness]} position={[-(size.x + doorWidth) / 4, 0, 0]}><meshStandardMaterial color={color} map={wallTexture} /></Box>
+          <Box args={[(size.x - doorWidth) / 2, size.y, thickness]} position={[(size.x + doorWidth) / 4, 0, 0]}><meshStandardMaterial color={color} map={wallTexture} /></Box>
+          <Box args={[doorWidth, size.y / 2, thickness]} position={[0, size.y / 4, 0]}><meshStandardMaterial color={color} map={wallTexture} /></Box>
+          <Box args={[0.2, size.y / 2, 0.6]} position={[-doorWidth / 2 - 0.1, -size.y / 4, 0]}><meshStandardMaterial color="#111" /></Box>
+          <Box args={[0.2, size.y / 2, 0.6]} position={[doorWidth / 2 + 0.1, -size.y / 4, 0]}><meshStandardMaterial color="#111" /></Box>
+          <Box args={[doorWidth + 0.4, 0.2, 0.6]} position={[0, 0, 0]}><meshStandardMaterial color="#111" /></Box>
+        </group>
+      ) : (
       <Box args={[size.x, size.y, thickness]} position={[0, 0, -size.z / 2]}>
         <meshStandardMaterial color={color} map={wallTexture} />
       </Box>
+      )}
       <Box args={[thickness, size.y, size.z]} position={[-size.x / 2, 0, 0]}>
         <meshStandardMaterial color={color} map={wallTexture} />
       </Box>
@@ -3074,7 +3086,14 @@ export const Scene: React.FC<SceneProps> = ({
         const t = 3.0;
         const size = new THREE.Vector3(...obj.args);
         const pos = new THREE.Vector3(...obj.pos);
-        walls.push({ pos: new THREE.Vector3(pos.x, pos.y, pos.z - size.z/2), size: new THREE.Vector3(size.x, size.y, t) });
+        if (obj.backDoor) {
+          // a doorway in the back wall too (two buildings placed back to front become one long building)
+          const bw = (size.x - doorWidth) / 2, bo = (size.x + doorWidth) / 4;
+          walls.push({ pos: new THREE.Vector3(pos.x - bo, pos.y, pos.z - size.z/2), size: new THREE.Vector3(bw, size.y, t) });
+          walls.push({ pos: new THREE.Vector3(pos.x + bo, pos.y, pos.z - size.z/2), size: new THREE.Vector3(bw, size.y, t) });
+        } else {
+          walls.push({ pos: new THREE.Vector3(pos.x, pos.y, pos.z - size.z/2), size: new THREE.Vector3(size.x, size.y, t) });
+        }
         walls.push({ pos: new THREE.Vector3(pos.x - size.x/2, pos.y, pos.z), size: new THREE.Vector3(t, size.y, size.z) });
         walls.push({ pos: new THREE.Vector3(pos.x + size.x/2, pos.y, pos.z), size: new THREE.Vector3(t, size.y, size.z) });
         const segmentWidth = (size.x - doorWidth) / 2;
@@ -4429,7 +4448,7 @@ export const Scene: React.FC<SceneProps> = ({
             currentAmmo = mustang * 100 + sally;
           }
         } else {
-          if (gameMode !== 'dead_ops') {
+          if (gameMode !== 'dead_ops' && !matchRules.infiniteAmmo) {
             currentAmmo--;
           }
         }
@@ -4645,6 +4664,18 @@ export const Scene: React.FC<SceneProps> = ({
           }
         }
         
+        // T-Dog's Land easter egg: the three red magic mushrooms can be shot (a generous round target around cap and stem)
+        if (mapConfig.id === 't_dogs_land' && !tDogsEEUnlocked) {
+          tDogsEeMushrooms.current.forEach((m, mi) => {
+            if (m.hit) return;
+            const hp = ray.ray.intersectSphere(new THREE.Sphere(new THREE.Vector3(m.pos.x, 1.4, m.pos.z), 1.9), new THREE.Vector3());
+            if (hp) {
+              const d = hp.distanceTo(rayOrigin);
+              if (d < closestHit.dist) closestHit = { dist: d, zombie: null, isHeadshot: false, hitPos: hp.clone(), isDragon: false, bot: null, eeMushroomIndex: mi, crowIndex: -1 };
+            }
+          });
+        }
+
         let floorHitPos = null;
         if (!closestHit.zombie && !closestHit.isDragon && !closestHit.bot && closestHit.eeMushroomIndex === -1) {
           if (direction.y < 0) {
@@ -6352,6 +6383,7 @@ export const Scene: React.FC<SceneProps> = ({
             label={obj.label || ''} 
             lightColor={obj.lightColor || '#fff'} 
             isOpen={obj.doorId ? openDoors.includes(obj.doorId) : true}
+            backDoor={obj.backDoor}
           />;
         }
         if (obj.modelUrl) {

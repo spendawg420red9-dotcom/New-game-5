@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect, Suspense } from 'react';
+import React, { useMemo, useRef, useEffect, useState, Suspense } from 'react';
 import * as THREE from 'three';
 import { useGLTF } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
@@ -8,6 +8,7 @@ import { resolveModelUrl } from '../userModels';
 import { Zombie3D, Dragon3D, Elephant3D, Ogre3D, Worm3D, MushroomKeeper3D } from './Enemy3DModels';
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { isMySkin, loadSkinCfg } from '../skinConfig';
+import { buildLowDetail } from '../meshSimplify';
 
 // Keeps the game alive if a GLB is missing or fails to load.
 export class GLBBoundary extends React.Component<{ fallback?: React.ReactNode; children?: React.ReactNode }, { failed: boolean }> {
@@ -38,6 +39,8 @@ const shrunkScenes = new WeakSet<object>();
 const maxTextureSize = () => {
   try { return window.matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820 ? 1024 : 2048; } catch { return 2048; }
 };
+
+const LOD_BASE = (() => { try { return window.matchMedia('(pointer: coarse)').matches ? 40 : 65; } catch { return 50; } })();
 
 // A model with millions of triangles can crash a phone's graphics. Past this limit it is drawn as a plain box instead (and a warning is logged).
 const heavyCache = new WeakMap<object, boolean>();
@@ -253,7 +256,33 @@ export const GLBProp: React.FC<{
     });
   });
 
-  return <group ref={wrapper}><primitive object={model} /></group>;
+  // Lower detail for far-away copies: past a distance the model is swapped for a simplified one (same look, a fifth of the triangles)
+  const [lowModel, setLowModel] = useState<THREE.Object3D | null>(null);
+  useEffect(() => {
+    if (heavy || hasCuts) { setLowModel(null); return; }
+    let alive = true;
+    buildLowDetail(model).then(l => { if (alive) setLowModel(l); }).catch(() => undefined);
+    return () => { alive = false; };
+  }, [model, heavy, hasCuts]);
+  const nearG = useRef<THREE.Group>(null);
+  const farG = useRef<THREE.Group>(null);
+  const lodT = useRef(Math.random() * 0.25);
+  const lodVec = useMemo(() => new THREE.Vector3(), []);
+  const lodDist = LOD_BASE + Math.max(size[0] || 1, size[1] || 1, size[2] || 1) * 0.6;
+  useFrame(({ camera }, dt) => {
+    lodT.current -= dt; if (lodT.current > 0 || !lowModel || !nearG.current || !farG.current) return;
+    lodT.current = 0.25;
+    nearG.current.getWorldPosition(lodVec);
+    const d = camera.position.distanceTo(lodVec);
+    const far = farG.current.visible ? d > lodDist - 6 : d > lodDist + 6; // a little hysteresis so it never flickers at the edge
+    farG.current.visible = far; nearG.current.visible = !far;
+  });
+  return (
+    <group ref={wrapper}>
+      <group ref={nearG}><primitive object={model} /></group>
+      {lowModel && <group ref={farG} visible={false}><primitive object={lowModel} /></group>}
+    </group>
+  );
 };
 
 // Scales any model (built-in zombie/boss meshes) to a target height with its feet on y=0.

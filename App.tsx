@@ -1574,6 +1574,9 @@ const App: React.FC = () => {
     ruleSpeed: 1,
     ruleLowGravity: false,
     ruleInstaKill: false,
+    ruleInfiniteAmmo: false,
+    ruleDamageTaken: 1,
+    ruleReloadSpeed: 1,
     playerName: 'Player',
     botNames: ['Bot 1', 'Bot 2', 'Bot 3', 'Bot 4', 'Bot 5', 'Bot 6', 'Bot 7', 'Bot 8'],
     gameMode: 'standard' as GameMode,
@@ -3483,7 +3486,7 @@ const App: React.FC = () => {
       let changed = false;
 
       if (update.hp !== undefined) {
-        const hpUpdate = isNaN(update.hp) ? 0 : update.hp;
+        const hpUpdate = (isNaN(update.hp) ? 0 : update.hp) * (update.hp < 0 ? matchRules.damageTaken : 1); // Mini-game rules: damage you take
         if (godMode && hpUpdate < 0) return prev;
         if (hpUpdate < 0) {
           if (Date.now() < dyingWishExpiry.current || Date.now() < respawnShieldExpiry.current) return prev; // Invincible / Shielded
@@ -4530,7 +4533,7 @@ const App: React.FC = () => {
     if (isReloading || stats.ammo === clipSize || status === GameStatus.PAUSED) return;
     setIsReloading(true);
     soundService.playReload(stats.weaponName);
-    const reloadSpeed = stats.perks.includes('speed') ? 600 : 1200;
+    const reloadSpeed = (stats.perks.includes('speed') ? 600 : 1200) / Math.max(0.2, matchRules.reloadSpeed);
     setTimeout(() => {
       setStats(s => ({ ...s, ammo: clipSize }));
       setIsReloading(false);
@@ -5280,7 +5283,7 @@ const App: React.FC = () => {
       };
     });
     setGodMode(customGameConfig.godMode);
-    setMatchRules({ speed: customGameConfig.ruleSpeed ?? 1, lowGravity: !!customGameConfig.ruleLowGravity, instaKill: !!customGameConfig.ruleInstaKill });
+    setMatchRules({ speed: customGameConfig.ruleSpeed ?? 1, lowGravity: !!customGameConfig.ruleLowGravity, instaKill: !!customGameConfig.ruleInstaKill, infiniteAmmo: !!customGameConfig.ruleInfiniteAmmo, damageTaken: customGameConfig.ruleDamageTaken ?? 1, reloadSpeed: customGameConfig.ruleReloadSpeed ?? 1 });
     setTeam1Score(0);
     setTeam2Score(0);
     
@@ -11213,6 +11216,21 @@ const App: React.FC = () => {
                         <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleSpeed: Math.min(2, Math.round(((prev.ruleSpeed ?? 1) + 0.1) * 10) / 10) }))} className="w-9 h-8 bg-white/10 font-black rounded-sm">+</button>
                       </span>
                     </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/70 text-[11px] font-bold uppercase">Damage you take {Math.round((customGameConfig.ruleDamageTaken ?? 1) * 100)}%</span>
+                      <span className="flex gap-1">
+                        <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleDamageTaken: Math.max(0.25, Math.round(((prev.ruleDamageTaken ?? 1) - 0.25) * 100) / 100) }))} className="w-9 h-8 bg-white/10 font-black rounded-sm">-</button>
+                        <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleDamageTaken: Math.min(3, Math.round(((prev.ruleDamageTaken ?? 1) + 0.25) * 100) / 100) }))} className="w-9 h-8 bg-white/10 font-black rounded-sm">+</button>
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-white/70 text-[11px] font-bold uppercase">Reload speed {Math.round((customGameConfig.ruleReloadSpeed ?? 1) * 100)}%</span>
+                      <span className="flex gap-1">
+                        <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleReloadSpeed: Math.max(0.5, Math.round(((prev.ruleReloadSpeed ?? 1) - 0.25) * 100) / 100) }))} className="w-9 h-8 bg-white/10 font-black rounded-sm">-</button>
+                        <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleReloadSpeed: Math.min(3, Math.round(((prev.ruleReloadSpeed ?? 1) + 0.25) * 100) / 100) }))} className="w-9 h-8 bg-white/10 font-black rounded-sm">+</button>
+                      </span>
+                    </div>
+                    <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleInfiniteAmmo: !prev.ruleInfiniteAmmo }))} className={`w-full p-2 rounded-sm font-black uppercase text-xs border ${customGameConfig.ruleInfiniteAmmo ? 'bg-fuchsia-600 border-fuchsia-300 text-white' : 'bg-black/50 border-white/10 text-white/50'}`}>Never run out of bullets: {customGameConfig.ruleInfiniteAmmo ? 'on' : 'off'}</button>
                     <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleLowGravity: !prev.ruleLowGravity }))} className={`w-full p-2 rounded-sm font-black uppercase text-xs border ${customGameConfig.ruleLowGravity ? 'bg-fuchsia-600 border-fuchsia-300 text-white' : 'bg-black/50 border-white/10 text-white/50'}`}>Low gravity (floaty jumps): {customGameConfig.ruleLowGravity ? 'on' : 'off'}</button>
                     <button onClick={() => setCustomGameConfig(prev => ({ ...prev, ruleInstaKill: !prev.ruleInstaKill }))} className={`w-full p-2 rounded-sm font-black uppercase text-xs border ${customGameConfig.ruleInstaKill ? 'bg-fuchsia-600 border-fuchsia-300 text-white' : 'bg-black/50 border-white/10 text-white/50'}`}>Your shots kill in one hit: {customGameConfig.ruleInstaKill ? 'on' : 'off'}</button>
                   </div>

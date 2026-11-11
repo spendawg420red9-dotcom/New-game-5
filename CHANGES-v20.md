@@ -62,3 +62,18 @@ Everything else is unchanged. Gun names are unchanged; saved guns from v19 keep 
 ## v20 – Multiplayer Arena template
 - Map builder > Templates: **Multiplayer Arena (ready to play)**. Raised centre deck with four ramps, cover, a lift to a high side deck, a secret bunker reached by a linked pair of teleporter pads, and every Multiplayer marker already placed (5 spawns per team, 11 free-for-all spawns, 3 hardpoint zones, 2 CTF flags). Open it, tick "Use my map" in Multiplayer, pick a game type, play. (Checked in a test: all four ramps meet the deck at 4 m and the markers turn into spawns / zones / flags.)
 - Phones now stop drawing 3D model props beyond 110 m (desktops 160 m).
+
+## v20 – far-away detail swap + more match rules
+- **Lower detail at a distance:** 3D model props with detailed meshes (over 2,500 triangles) get a simplified copy (about a fifth of the triangles, same textures and materials, almost no extra memory). Past about 40 m on phones (65 m desktop, a bit more for big models) the simplified copy is drawn instead, with a small buffer so it never flickers. Small / simple models are left alone. Tested: a 119k-triangle shape became about 24k with textures coordinates and normals kept.
+- **More Mini-game rules** (Custom Game, saved with each mode): Never run out of bullets, Damage you take (25%-300%), Reload speed (50%-300%), on top of Run speed, Low gravity and One-hit kills.
+
+## v20 – checks that were run (in a test environment, not on a phone)
+- A 19.6 MB .glb with 699k triangles loaded through the new loader (as a "My Models" blob address) and came out at the 450k desktop budget in about 0.7 s (the phone budget is 140k).
+- Gun part motions (slide / magazine drop...) saved by the Shape Studio survive being exported to a .glb and loaded back.
+- Moving platforms: floor height follows the platform, you are carried with it, space under a lifted one is open.
+- Multiplayer Arena: ramps meet the deck, markers become spawns / zones / flags.
+- Distance detail swap: 119k triangles became about 24k, textures coordinates and normals kept.
+
+## v20 – T-Dog's Land mushrooms + Mukkatown houses
+- **T-Dog's Land easter egg:** the three red magic mushrooms were drawn but the shot detection for them was missing, so they could never be hit. Your shots now hit them (a generous round target around the cap and stem, up to 100 m). Hit all three to unlock the island.
+- **Mukkatown houses:** each house's inner door opened onto the back wall of its garage, which was solid, so it was a building inside a building. The garages now have a doorway in the back wall (new building option `backDoor`, also drawn with a door frame). Garage -> buy the house door -> house is one walkable run. Checked with a test of the wall layout: the path from the garage into the house was blocked at the garage back wall before and is clear now. Works for both the yellow and green houses.
